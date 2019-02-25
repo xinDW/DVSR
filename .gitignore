@@ -1,0 +1,13 @@
+/__pycache__
+/checkpoint/
+/data/
+/log/
+/sample/
+/tensorlayer/
+/test_edge/
+/delete.py
+/grads_and_vars
+/main_dataset.py
+/main_read_partial.py
+/**/test*.py
+/train_dfe.py
