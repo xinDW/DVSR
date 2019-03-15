@@ -1,18 +1,12 @@
 import tensorflow as tf
 import tensorlayer as tl
 
-from utils import *
-from config import *
-from model import conv3d, conv3d_transpose
-from custom import SubpixelConv3d
-from tensorlayer.layers import InputLayer, ConcatLayer, ElementwiseLayer
+from .custom import conv3d, conv3d_transpose, batch_norm, concat, SubVoxelConv
+from tensorlayer.layers import InputLayer, ElementwiseLayer
 
-conv_kernel = config.TRAIN.conv_kernel
-
-def concat(layer, concat_dim=-1, name='concat'):
-    return ConcatLayer(layer, concat_dim=concat_dim, name=name)
+__all__ = ['res_dense_net']
    
-def res_dense_block(preceding, G=64, name='rdb'):
+def res_dense_block(preceding, G=64, conv_kernel=3, bn=False, is_train=True, name='rdb'):
     """
     Resifual dense block
     Params : 
@@ -26,16 +20,18 @@ def res_dense_block(preceding, G=64, name='rdb'):
     act = tf.nn.relu
     with tf.variable_scope(name):
         n1 = conv3d(preceding, out_channels=G, filter_size=conv_kernel, stride=1, act=act, name='conv1')
-        
+        if bn: n1 = batch_norm(n1, is_train=is_train, name='bn1') 
         n2 = concat([preceding, n1], name='conv2_in')
         n2 = conv3d(n2, out_channels=G, filter_size=conv_kernel, stride=1, act=act, name='conv2')
-        
+        if bn: n2 = batch_norm(n2, is_train=is_train, name='bn2') 
         n3 = concat([preceding, n1, n2], name='conv3_in')
         n3 = conv3d(n3, out_channels=G, filter_size=conv_kernel, stride=1, act=act, name='conv3')
+        if bn: n3 = batch_norm(n3, is_train=is_train, name='bn3') 
         
         # local feature fusion (LFF)
         n4 = concat([preceding, n1, n2, n3], name='conv4_in')
         n4 = conv3d(n4, out_channels=G, filter_size=1, name='conv4')
+        if bn: n4 = batch_norm(n4, is_train=is_train, name='bn4') 
         
         # local residual learning (LRL)
         out = ElementwiseLayer([preceding, n4], combine_fn=tf.add, name='out')
@@ -43,25 +39,37 @@ def res_dense_block(preceding, G=64, name='rdb'):
         return out
 
 def upscale(layer, scale=2, name='upscale'):
-    return SubpixelConv3d(layer, scale=scale, n_out_channel=None, act=tf.identity, name=name)
-        
-def res_dense_net(lr, factor=4, reuse=False, format_out=True, name='RDN'):
+    return SubVoxelConv(layer, scale=scale, n_out_channel=None, act=tf.identity, name=name)
+
+def res_dense_net(lr, factor=4, conv_kernel=3, reuse=False, bn=False, is_train=True, format_out=True, name='RDN'):
+    '''Residual Dense net
+    Params:
+      -factor: super-resolution enhancement factor 
+      -reuse: reuse the variables or not (in tf.variable_scope(name))
+      -bn: whether use batch norm after conv layers or not
+      -is_train: paramete with the identical name in tl.layer.BatchNormLayer (only valid when 'bn' == True)
+      -format_out: if False, keep the increased pixels in channels dimension. Else re-arrange them into spatial dimensions(what the SubvoxelConv does exactly)
+    '''
     G0 = 64
     with tf.variable_scope(name, reuse=reuse):
       n = InputLayer(lr, 'lr')
       
       # shallow feature extraction layers
       n1 = conv3d(n, out_channels=G0, filter_size=conv_kernel, name='shallow1')
+      if bn: n1 = batch_norm(n1, is_train=is_train, name='bn1') 
       n2 = conv3d(n1, out_channels=G0, filter_size=conv_kernel, name='shallow2')
+      if bn: n2 = batch_norm(n2, is_train=is_train, name='bn2') 
       
-      n3 = res_dense_block(n2, name='rdb1')
-      n4 = res_dense_block(n3, name='rdb2')
-      n5 = res_dense_block(n4, name='rdb3')
+      n3 = res_dense_block(n2, bn=bn, name='rdb1')
+      n4 = res_dense_block(n3, bn=bn, name='rdb2')
+      n5 = res_dense_block(n4, bn=bn, name='rdb3')
 
       # global feature fusion (GFF)
       n6 = concat([n3, n4, n5], name='gff')
       n6 = conv3d(n6, out_channels=G0, filter_size=1, name='gff/conv1')
+      if bn: n6 = batch_norm(n6, is_train=is_train, name='bn3') 
       n6 = conv3d(n6, out_channels=G0, filter_size=conv_kernel, name='gff/conv2')
+      if bn: n6 = batch_norm(n6, is_train=is_train, name='bn4') 
       
       # global residual learning 
       n7 = ElementwiseLayer([n6, n1], combine_fn=tf.add, name='grl')
@@ -84,7 +92,7 @@ def res_dense_net(lr, factor=4, reuse=False, format_out=True, name='RDN'):
       return out        
         
 
-def res_dense_net_4gpu(lr, factor=4, format_out=True, name='generator'):
+def res_dense_net_4gpu(lr, factor=4, conv_kernel=3, format_out=True, name='generator'):
     G0 = 64
      
     with tf.variable_scope(name):

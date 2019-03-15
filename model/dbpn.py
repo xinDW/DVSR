@@ -1,15 +1,10 @@
 import tensorflow as tf 
 import tensorlayer as tl
 
-from tensorlayer.layers import InputLayer, ConcatLayer, ElementwiseLayer, PReluLayer
-from model import conv3d, conv3d_transpose, concat
+from tensorlayer.layers import InputLayer
+from .custom import conv3d, conv3d_transpose, concat, prelu
 
-def prelu(x, name='prelu'):
-    w_shape = x.get_shape()[-1]
-    with tf.variable_scope(name):
-        alphas = tf.get_variable(name='alphas', shape=w_shape, initializer=tf.constant_initializer(value=0.0) )
-        out = tf.nn.relu(x) + tf.multiply(alphas, (x - tf.abs(x))) * 0.5
-        return out
+__all__ = ['DBPN']
 
 def up_block(x, n_filters, k_size=8, stride=4, act=tf.identity, name='up_block'):
     '''
@@ -67,14 +62,18 @@ def d_down_block(x, n_filters, k_size=8, stride=4, act=tf.identity, name='d_down
         l1.outputs = l1.outputs + l0.outputs
         return l1
 
-def DBPN(input, feat=64, base_filter=32, name='dbpn'):
+def DBPN(input, feat=64, base_filter=32, upscale=False, name='dbpn'):
     '''
     Dense-deep Back-projection Net
+    Params:
+        -upscale: if False, the output will have the same size as the input LR.
     '''
     act = prelu
     kernel = 3
-    stride = 2
 
+    stride = 4 if upscale else 2
+    additional_up_down_pair = 1 if upscale else 2
+    
     with tf.variable_scope(name):
         n_channels = input.shape[-1]
         x = InputLayer(input, name='input')
@@ -94,7 +93,7 @@ def DBPN(input, feat=64, base_filter=32, name='dbpn'):
         concat_l = concat([l, l1])
         h = d_up_block(concat_l, n_filters=base_filter, k_size=kernel, stride=stride, act=act, name='up3')
 
-        for i in range(0, 2):
+        for i in range(0, additional_up_down_pair):
             concat_h = concat([h, concat_h])
             l =  d_down_block(concat_h, n_filters=base_filter, k_size=kernel, stride=stride, act=act, name='down%d' % (i + 3))
 
@@ -102,6 +101,9 @@ def DBPN(input, feat=64, base_filter=32, name='dbpn'):
             h = d_up_block(concat_l, n_filters=base_filter, k_size=kernel, stride=stride, act=act, name='up%d' % (i + 4))
 
         concat_h = concat([h, concat_h])
-        #x =  conv3d(concat_h, out_channels=n_channels, filter_size=3, name='output_conv')
-        x = down_block(concat_h, n_filters=1, k_size=3, stride=stride, name='out')
+
+        if upscale:
+            x =  conv3d(concat_h, out_channels=n_channels, filter_size=3, name='output_conv')
+        else:
+            x = down_block(concat_h, n_filters=1, k_size=3, stride=stride, name='out')
         return x

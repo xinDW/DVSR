@@ -4,15 +4,23 @@ import os
 from utils import get_tiff_fn
 
 class Dataset:
-    def __init__(self, train_hr_path, train_lr_path, train_mr_path, hr_size, lr_size):
+    def __init__(self, train_hr_path, train_lr_path, train_mr_path, hr_size, lr_size, valid_lr_path = None):
         self.train_lr_path = train_lr_path
         self.train_hr_path = train_hr_path
         self.train_mr_path = train_mr_path
 
+        ## if LR measurement is designated for validation during the trianing
+        if valid_lr_path is not None:
+            self.valid_lr_path = valid_lr_path
+            self.hasValidation = True
+        else:
+            self.hasValidation = False
+
         self.lr_size = lr_size
         self.hr_size = hr_size
-    
-    def __load_training_data(self):
+        self.prepared = False
+
+    def _load_training_data(self):
         def _read_images(path, img_size):
             
             """
@@ -47,6 +55,8 @@ class Dataset:
         self.training_data_lr = _read_images(self.train_lr_path, self.lr_size)
         self.training_data_mr = _read_images(self.train_mr_path, self.lr_size)
         self.training_data_hr = _read_images(self.train_hr_path, self.hr_size)
+        if self.hasValidation:
+            self.valid_data_lr = _read_images(self.valid_lr_path, self.lr_size)
         
         assert self.training_data_hr.shape[0] == self.training_data_lr.shape[0]
         assert self.training_data_mr.shape[0] == self.training_data_lr.shape[0]
@@ -56,21 +66,43 @@ class Dataset:
         '''
         this function must be called after the Dataset instance is created
         '''
-        if os.path.exists(self.train_lr_path) and os.path.exists(self.train_hr_path) and os.path.exists(self.train_mr_path):
-            self.training_pair_num = self.__load_training_data()
-        else:
-            raise Exception('image data path doesn\'t exist')
+        if self.prepared == True:
+            return self.training_pair_num
+
+        if not os.path.exists(self.train_lr_path):
+            raise Exception('lr training data path doesn\'t exist : %s' % self.train_lr_path)
+        if not os.path.exists(self.train_hr_path):
+            raise Exception('hr training data path doesn\'t exist : %s' % self.train_hr_path)
+        if not os.path.exists(self.train_mr_path):
+            raise Exception('mr training data path doesn\'t exist : %s' % self.train_mr_path)
+        if self.hasValidation:
+            if not os.path.exists(self.valid_lr_path):
+                raise Exception('test data path doesn\'t exist : %s' % self.valid_lr_path)
+        self.training_pair_num = self._load_training_data()
+        
+            
         self.batch_size = batch_size
         self.n_epochs = n_epochs
 
         self.cursor = batch_size
         self.epoch = 0
-
+        self.prepared = True
+        
         print('HR dataset : %s\nLR dataset: %s\nMR dataset: %s\n' % (str(self.training_data_hr.shape), str(self.training_data_lr.shape), str(self.training_data_mr.shape)))
         return self.training_pair_num
 
-    def for_eval(self):
+    ## in case that the term "test" and "valid" are confusing:
+    #  -test : test data follows the same probability distribution as the training dataset, thus a part of training data is used as the test data.
+    #  -valid : validation data (also called development set) is used to choose a model, thus LR measurement is the valid date.
+
+    def for_test(self):
         return self.training_data_hr[0 : self.batch_size], self.training_data_lr[0 : self.batch_size], self.training_data_mr[0 : self.batch_size]
+
+    def for_valid(self):
+        if self.hasValidation:
+            return self.valid_data_lr
+        else:
+            raise Exception ('validation set not designated')
 
     def hasNext(self):
         return True if self.epoch < self.n_epochs else False

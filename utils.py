@@ -4,8 +4,6 @@ import tensorlayer as tl
 import numpy as np
 import SimpleITK as sitk
 
-from tensorlayer.prepro import *
-
 def read_all_images(path, z_range, format_out=True, factor=None):
     """
     Params:
@@ -154,13 +152,16 @@ def transform(image3d, factor=[4,4,4], inverse=False):
                 ret = np.concatenate((ret, tmp), axis=0)
     return ret
 
-def write3d_(x, path, scale_pixel_value=True):
+def _write3d(x, path, scale_pixel_value=True):
     """
-    x : [depth, height, width, channels]
+    Params:
+        -x : [depth, height, width, channels]
+        -max_val : possible maximum pixel value (65535 for 16-bit or 255 for 8-bit)
     """
     if scale_pixel_value:
         x = x + 1.  #[0, 2]
         x = x * 65535. / 2.
+
     x = x.astype(np.uint16)
     stack = sitk.GetImageFromArray(x)
     #stack = sitk.Cast(stack, sitk.sitkUInt16)
@@ -168,7 +169,9 @@ def write3d_(x, path, scale_pixel_value=True):
         
 def write3d(x, path, scale_pixel_value=True):
     """
-    x : [batch, depth, height, width, channels] or [batch, height, width, channels>3]
+    Params:
+        -x : [batch, depth, height, width, channels] or [batch, height, width, channels>3]
+        -scale_pixel_value : scale pixels value to [0, 65535] is True
     """
     
     fragments = path.split('.')
@@ -191,7 +194,15 @@ def write3d(x, path, scale_pixel_value=True):
     else:
         raise Exception('unsupported dims : %s' % str(x.shape))
     
+    '''
+    if bitdepth == 16:
+        max_val = 65535.
+    elif bitdepth == 8:
+        max_val = 255.
+    else :
+        raise Exception('unsupported bitdepth : %d' % bitdepth)
+    '''
     for index, image in enumerate(x_re):
         #print(image.shape)
-        write3d_(image, new_path + '_' + str(index) + '.' + fragments[-1], scale_pixel_value)       
+        _write3d(image, new_path + '_' + str(index) + '.' + fragments[-1], scale_pixel_value)       
     

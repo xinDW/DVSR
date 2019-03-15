@@ -1,9 +1,17 @@
 import tensorflow as tf
 import tensorlayer as tl
 import numpy as np
-from tensorlayer.layers import *
-from config import *
-from custom import SubpixelConv3d
+from tensorlayer.layers import Layer, Conv3dLayer, DeConv3dLayer, ConcatLayer, BatchNormLayer
+
+__all__ = ['conv3d',
+    'conv3d_transpose',
+    'concat',
+    'batch_norm',
+    'prelu',
+    'SubVoxelConv',
+    'LReluLayer',
+    'ReluLayer'
+]
 
 w_init = tf.random_normal_initializer(stddev=0.02)
 b_init = tf.constant_initializer(value=0.0)
@@ -14,7 +22,8 @@ def conv3d_transpose(input, out_channels, filter_size, stride, act=None, padding
     shape = [filter_size, filter_size, filter_size, out_channels, in_channels]
     output_shape = [batch, depth*stride, height*stride, width*stride, out_channels]
     strides = [1, stride, stride, stride, 1]
-    return tl.layers.DeConv3dLayer(input, act=act, shape=shape, output_shape=output_shape, strides=strides, padding=padding, W_init=w_init, b_init=b_init, name=name);
+    return DeConv3dLayer(input, act=act, shape=shape, output_shape=output_shape, strides=strides, padding=padding, W_init=w_init, b_init=b_init, name=name)
+
 def conv3d_transpose2(input, out_channels, filter_size, stride, padding='SAME', name='conv3d_transpose' ):
     return tf.layers.Conv3DTranspose(filters=out_channels, kernel_size=(filter_size, filter_size, filter_size), strides=(stride, stride, stride), padding=padding, kernel_initializer=w_init, bias_initializer=b_init, name=name);
 
@@ -38,17 +47,119 @@ def conv3d2(input, out_channels, filter_size=3, stride=1, padding='SAME', name='
         weight = tf.get_variable(name='weight_conv3d', shape=filter_shape, initializer=tf.truncated_normal_initializer(stddev=0.02))
         bias = tf.get_variable(name='bias_conv3d', shape=[out_channels], initializer=tf.constant_initializer(value=0.0))
         return tf.nn.conv3d(input, weight, strides, padding)
-        
-def concat(layers, concat_dim=4, name='concat'):
-    return tl.layers.ConcatLayer(layers, concat_dim=concat_dim, name=name)
+
+def concat(layer, concat_dim=-1, name='concat'):
+    return ConcatLayer(layer, concat_dim=concat_dim, name=name)        
 
 def batch_norm(layer, act=tf.identity, is_train=True, gamma_init=g_init, name='bn'):  
     return BatchNormLayer(layer, act=act, is_train=is_train, gamma_init=gamma_init, name=name)
+
+def prelu(x, name='prelu'):
+    w_shape = x.get_shape()[-1]
+    with tf.variable_scope(name):
+        alphas = tf.get_variable(name='alphas', shape=w_shape, initializer=tf.constant_initializer(value=0.0) )
+        out = tf.nn.relu(x) + tf.multiply(alphas, (x - tf.abs(x))) * 0.5
+        return out
+
+
+class LReluLayer(Layer):
     
+    def __init__(self, layer=None, alpha=0.2, name='leaky_relu'):
+        Layer.__init__(self, name=name)
+        self.inputs = layer.outputs
+        
+        with tf.variable_scope(name):
+            self.outputs = tf.nn.leaky_relu(self.inputs, alpha=alpha)
+        self.all_layers = list(layer.all_layers)
+        self.all_params = list(layer.all_params)
+        self.all_drop = dict(layer.all_drop)
+        self.all_layers.extend( [self.outputs] )
+
+class ReluLayer(Layer):
+    
+    def __init__(self, layer=None, name='relu'):
+        Layer.__init__(self, name=name)
+        self.inputs = layer.outputs
+        
+        with tf.variable_scope(name):
+            self.outputs = tf.nn.relu(self.inputs)
+        self.all_layers = list(layer.all_layers)
+        self.all_params = list(layer.all_params)
+        self.all_drop = dict(layer.all_drop)
+        self.all_layers.extend( [self.outputs] )
+        
+def _interpolateXY(data, ratio, nchannels_out=1):
+   """
+   interpolate height and width 
+   
+   Parameters
+   data [batch_size, depth, height, width, nchannels]
+   """
+   assert len(data.shape) == 5, "incompatible data dimension"
+   bsize, d, h, w, c = data.get_shape().as_list()
+   assert c == (ratio**2) * nchannels_out, "nchannels_out: %d , nchannels_in: %d, ratio: %d\n" % (nchannels_out, c, ratio)
+   
+   Xs_ = tf.split(data, ratio, 4) # split channels
+   Xr_ = tf.concat(Xs_, 3)        # concat at width dimension  
+   #print(bsize, d, h*ratio, w*ratio, nchannels_out)
+   X_ = tf.reshape(Xr_, (bsize, d, h*ratio, w*ratio, int(nchannels_out)))
+   return X_
+   
+def SubVoxelConv(net, scale=2, n_out_channel=None, act=tf.identity, name='subpixel_conv3d'):    
+    
+    """
+    Inflate pixles in [channels] into [depth height width] to interpola the 3-d image 
+    Parameters
+    net : [batch depth height width channels]
+    
+    """
+    scope_name = tf.get_variable_scope().name
+    if scope_name:
+        name = scope_name + '/' + name
+        
+    def _PS(X, r, n_out_channel):
+        if n_out_channel >= 1:
+            assert int(X.get_shape()[-1]) == (r ** 3) * n_out_channel, "n_channels_in == scale^3 * n_channels_out"
+            batch_size, depth, height, width, channels = X.get_shape().as_list()
+            batch_size = tf.shape(X)[0]
+            Xs = tf.split(X, r, 4)
+            
+            i = 0
+            for subx in Xs:
+                Xs[i] = _interpolateXY(subx, scale, nchannels_out=int(Xs[i].get_shape()[-1]) / (scale**2))
+                i += 1
+            
+            Xr = tf.concat(Xs, 2)  # concat at height dimension
+            print(batch_size)
+            X = tf.reshape(Xr, (batch_size, depth*scale, height*scale, width*scale, n_out_channel))
+            
+        return X
+    
+    inputs = net.outputs
+    
+    if n_out_channel is None:
+        assert int(inputs.get_shape()[-1]) / (scale ** 3) % 1 == 0, "nchannels_in == ratio^3 * nchannels_out"
+        n_out_channel = int(int(inputs.get_shape()[-1]) / (scale ** 3))
+        
+    print("  SubvoxelConv  %s : scale: %d n_out_channel: %s act: %s " % (name, scale, n_out_channel, act.__name__))  
+    
+    net_new = Layer(inputs, name=name)
+    with tf.variable_scope(name) as vs:
+        net_new.outputs = act(_PS(inputs, r=scale, n_out_channel=n_out_channel))
+    
+    net_new.all_layers = list(net.all_layers)
+    net_new.all_params = list(net.all_params)
+    net_new.all_drop = dict(net.all_drop)
+    net_new.all_layers.extend( [net_new.outputs] ) 
+    return net_new
+
+
+
+'''
 def deep_feature_extractor(input, reuse=False, name="dfe"):
-    n_layers_encoding = 3;
+    n_layers_encoding = 3
     n_channels = 64
-    n_channels_in = input.get_shape().as_list()[-1];
+    n_channels_in = input.get_shape().as_list()[-1]
     features = []
     encoding = []
     
@@ -231,3 +342,4 @@ def tf_ms_ssim(img1, img2, weights=None, mean_metric=False):
         return tf.reduce_mean(value)
     else:
         return value
+'''
