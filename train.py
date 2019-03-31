@@ -86,21 +86,27 @@ class Trainer:
                     resolver = DBPN(self.LR, upscale=False, name=variable_tag_n1)
                 #with tf.device('/gpu:1'):
                     interpolator = res_dense_net(resolver.outputs, conv_kernel=conv_kernel, reuse=False, bn=using_batch_norm, is_train=True, name=variable_tag_n2)
+
+                resolve_loss = mean_squared_error(self.MR, resolver.outputs, is_mean=True)
+                interp_loss = mean_squared_error(self.HR, interpolator.outputs, is_mean=True)
+
             else :
                 self.MR = tf.placeholder("float", [batch_size] + hr_size)   
-                with tf.device('/gpu:0'):
-                    interpolator = res_dense_net(self.LR, conv_kernel=conv_kernel, reuse=False, bn=using_batch_norm, is_train=True, name=variable_tag_n2)
                 with tf.device('/gpu:1'):
-                    resolver = DBPN(interpolator.outputs, upscale=False, name=variable_tag_n1)
-                    
+                    interpolator = DBPN(self.LR, upscale=True, name=variable_tag_n1)
+                with tf.device('/gpu:0'):
+                    resolver = res_dense_net(interpolator.outputs, factor=1, conv_kernel=conv_kernel, reuse=False, bn=using_batch_norm, is_train=True, name=variable_tag_n2)
+
+                resolve_loss = mean_squared_error(self.HR, resolver.outputs, is_mean=True)
+                interp_loss = mean_squared_error(self.MR, interpolator.outputs, is_mean=True)    
             #resolver.print_params(False)
             #interpolator.print_params(False)
 
             vars_n1 = tl.layers.get_variables_with_name(variable_tag_n1, train_only=True, printable=False)
             vars_n2 = tl.layers.get_variables_with_name(variable_tag_n2, train_only=True, printable=False)
 
-            resolve_loss = mean_squared_error(self.MR, resolver.outputs, is_mean=True)
-            interp_loss = mean_squared_error(self.HR, interpolator.outputs, is_mean=True)
+            #resolve_loss = mean_squared_error(self.MR, resolver.outputs, is_mean=True)
+            #interp_loss = mean_squared_error(self.HR, interpolator.outputs, is_mean=True)
             t_loss = resolve_loss + interp_loss
 
             #n1_optim = tf.train.AdamOptimizer(self.learning_rate_var, beta1=beta1).minimize(t_loss, var_list=vars_n1)

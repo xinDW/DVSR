@@ -66,7 +66,8 @@ def DBPN(input, feat=64, base_filter=32, upscale=False, name='dbpn'):
     '''
     Dense-deep Back-projection Net
     Params:
-        -upscale: if False, the output will have the same size as the input LR.
+        -upscale: if False, the output will have the same size as the input LR, 
+                else the output_size = 4 * input_size
     '''
     act = prelu
     kernel = 3

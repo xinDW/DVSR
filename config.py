@@ -6,12 +6,12 @@ config.TRAIN_DFE = edict()
 config.VALID = edict()
 
 
-config.TRAIN.img_size_lr = [20, 40, 40, 1] #[d,h,w,c]
-config.TRAIN.img_size_hr = [80, 160, 160, 1]
+config.TRAIN.img_size_lr = [10, 40, 40, 1] #[d,h,w,c]
+config.TRAIN.img_size_hr = [40, 160, 160, 1]
 
 ## if use multi-gpu training
 config.TRAIN.num_gpus = 2
-## if use single-gpu training 
+## if use single-gpu training  
 config.TRAIN.device_id = 0
 
 config.TRAIN.using_edges_loss = False
@@ -21,13 +21,14 @@ config.TRAIN.using_batch_norm  = False
 #label = 'celegans_simu_by_zhaoyuxuan_2stage_dbpn+rdn_factor4_mse'
 #label = 'whole_brain_training_hr_step1um_2stage_dbpn+rdn_factor4_mse'
 #label = 'brain_simu_by_fangchunyu_hr_step1um_lr_20fps_training_data_xz-transposed_2stage_dbpn+rdn_factor4_mse'
-label = 'whole+half_brain_training_hr_deconv_step1um_2stage_dbpn+rdn_factor4_mse_for_test'
+label = 'whole+half_brain_training_hr_deconv_step1um_2stage_dbpn+rdn_factor4_mse'
 config.label = label
 config.archi = '2stage_interp_first'
+#config.archi = '2stage_resolve_first'
 
-config.TRAIN.lr_img_path = "data/train/brain/brain20190316/cropped_160X160X80_overlap0.20/lr/"
-config.TRAIN.hr_img_path = "data/train/brain/brain20190316/cropped_160X160X80_overlap0.20/hr_deconv_denoised/"
-config.TRAIN.mr_img_path = "data/train/brain/brain20190316/cropped_160X160X80_overlap0.20/mr/"
+config.TRAIN.lr_img_path = "data/brain/brain20190316/cropped_160X160X80_overlap0.20/lr/"
+config.TRAIN.hr_img_path = "data/brain/brain20190316/cropped_160X160X80_overlap0.20/hr_deconv_denoised/"
+config.TRAIN.mr_img_path = "data/brain/brain20190316/cropped_160X160X80_overlap0.20/hr_deconv_denoised/ds/"
 #config.TRAIN.lr_img_path = "data/train/3T3/488/factor4_sbg/cropped64X64X16_overlap0.20-0.20-0.20/all/dynamic_range_adjusted/"
 #config.TRAIN.hr_img_path = "data/train/3T3/488/factor4_sbg/cropped256X256X64_overlap0.20-0.20-0.20/all/dynamic_range_adjusted/"
 #config.TRAIN.mr_img_path = "data/train/3T3/488/factor4_sbg/cropped256X256X64_overlap0.20-0.20-0.20/all/dynamic_range_adjusted/ds/"
@@ -52,5 +53,5 @@ config.VALID.lr_img_path = "data/train/brain/brain20190316/valid_3.2X_40X40X20/"
 #config.VALID.lr_img_path = "data/validate/zebrafish_heart/"
 config.VALID.lr_img_size = [20,40,40,1] # [depth, height, width, channels]
 #config.VALID.saving_path = "sample/validate/conv_kernel%d/" % config.TRAIN.conv_kernel
-config.VALID.saving_path = "data/celegans/recon/{}/".format(label)
+config.VALID.saving_path = "data/recon/{}/".format(label)
 config.VALID.on_the_fly = True
