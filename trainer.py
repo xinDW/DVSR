@@ -1,3 +1,4 @@
+import os
 import time
 import tensorflow as tf
 import tensorlayer as tl
@@ -8,11 +9,14 @@ from losses import mean_squared_error, edges_loss, l1_loss
 from model import res_dense_net, DBPN
 from dataset import Dataset
 from utils import *
-from config import *
+from config import config
 
 batch_size = config.TRAIN.batch_size
 lr_size = config.TRAIN.img_size_lr # [depth height width channels]
 hr_size = config.TRAIN.img_size_hr
+
+label = config.label
+archi = config.archi
 
 conv_kernel = config.TRAIN.conv_kernel
 using_batch_norm = config.TRAIN.using_batch_norm 
@@ -56,8 +60,12 @@ def tf_print(tensor):
     return tf.Print(input_=input_, data=data)
 
 class Trainer:
-    def __init__(self, dataset, architecture='2stage'):
-        assert architecture in ['2stage', 'rdn'] 
+    """
+    Params:
+        -architechture: ['2stage_interp_first', '2stage_resolve_first', 'rdn']
+    """
+    def __init__(self, dataset, architecture='2stage_resolve_first'):
+        assert architecture in ['2stage_interp_first', '2stage_resolve_first', 'rdn'] 
         self.archi = architecture
         self.dataset = dataset
 
@@ -68,16 +76,23 @@ class Trainer:
         self.LR = tf.placeholder("float", [batch_size] + lr_size)       
         self.HR = tf.placeholder("float", [batch_size] + hr_size)
 
-        if (self.archi == '2stage'):
-            self.MR = tf.placeholder("float", [batch_size] + lr_size)   
+        if ('2stage' in self.archi):
             variable_tag_n1 = 'Resolve'
             variable_tag_n2 = 'Interp'
 
-            with tf.device('/gpu:0'):
-                resolver = DBPN(self.LR, upscale=False, name=variable_tag_n1)
-            with tf.device('/gpu:1'):
-                interpolator = res_dense_net(resolver.outputs, conv_kernel=conv_kernel, reuse=False, bn=using_batch_norm, is_train=True, name=variable_tag_n2)
-        
+            if ('resolve_first' in self.archi):
+                self.MR = tf.placeholder("float", [batch_size] + lr_size)   
+                with tf.device('/gpu:0'):
+                    resolver = DBPN(self.LR, upscale=False, name=variable_tag_n1)
+                #with tf.device('/gpu:1'):
+                    interpolator = res_dense_net(resolver.outputs, conv_kernel=conv_kernel, reuse=False, bn=using_batch_norm, is_train=True, name=variable_tag_n2)
+            else :
+                self.MR = tf.placeholder("float", [batch_size] + hr_size)   
+                with tf.device('/gpu:0'):
+                    interpolator = res_dense_net(self.LR, conv_kernel=conv_kernel, reuse=False, bn=using_batch_norm, is_train=True, name=variable_tag_n2)
+                with tf.device('/gpu:1'):
+                    resolver = DBPN(interpolator.outputs, upscale=False, name=variable_tag_n1)
+                    
             #resolver.print_params(False)
             #interpolator.print_params(False)
 
@@ -86,13 +101,16 @@ class Trainer:
 
             resolve_loss = mean_squared_error(self.MR, resolver.outputs, is_mean=True)
             interp_loss = mean_squared_error(self.HR, interpolator.outputs, is_mean=True)
-
             t_loss = resolve_loss + interp_loss
-            n1_optim = tf.train.AdamOptimizer(self.learning_rate_var, beta1=beta1).minimize(t_loss, var_list=vars_n1)
-            n2_optim = tf.train.AdamOptimizer(self.learning_rate_var, beta1=beta1).minimize(interp_loss, var_list=vars_n2)
-            
-            self.loss = {'t_loss' : t_loss, 'interp_loss' : interp_loss}
-            self.optim = {'n1_optim' : n1_optim, 'n2_optim' : n2_optim}
+
+            #n1_optim = tf.train.AdamOptimizer(self.learning_rate_var, beta1=beta1).minimize(t_loss, var_list=vars_n1)
+            #n2_optim = tf.train.AdamOptimizer(self.learning_rate_var, beta1=beta1).minimize(interp_loss, var_list=vars_n2)
+            n1_optim = tf.train.AdamOptimizer(self.learning_rate_var, beta1=beta1).minimize(interp_loss)
+            n2_optim = tf.train.AdamOptimizer(self.learning_rate_var, beta1=beta1).minimize(resolve_loss)
+            n_optim = tf.train.AdamOptimizer(self.learning_rate_var, beta1=beta1).minimize(t_loss)
+
+            self.loss = {'t_loss' : t_loss, 'interp_loss' : interp_loss, 'resolve_loss' : resolve_loss}
+            self.optim = {'n1_optim' : n1_optim, 'n2_optim' : n2_optim, 'n_optim' : n_optim}
             self.resolver = resolver
             self.interpolator = interpolator
 
@@ -174,9 +192,10 @@ class Trainer:
         write3d(out_interp, test_saving_dir+'hr_test_epoch{}.tif'.format(epoch))
 
         if config.VALID.on_the_fly:
-            for idx in range(0, len(self.valid_lr) - batch_size, batch_size):
-                valid_lr_batch = self.valid_lr[idx : idx + batch_size]
-                self._valid_on_the_fly(sess, epoch, idx, valid_lr_batch)
+            for idx in range(0, len(self.valid_lr), batch_size):
+                if idx + batch_size < len(self.valid_lr):
+                    valid_lr_batch = self.valid_lr[idx : idx + batch_size]
+                    self._valid_on_the_fly(sess, epoch, idx, valid_lr_batch)
 
     def train(self, begin_epoch=0):
         
@@ -250,8 +269,8 @@ if __name__ == '__main__':
     args = parser.parse_args()
     begin_epoch = args.ckpt
     
-    dataset = Dataset(train_hr_img_path, train_lr_img_path, train_mr_img_path, hr_size, lr_size)
-    trainer = Trainer(dataset)
+    dataset = Dataset(train_hr_img_path, train_lr_img_path, train_mr_img_path, hr_size, lr_size, hr_size, valid_lr_img_path)
+    trainer = Trainer(dataset, architecture=archi)
     trainer.build_graph()
     trainer.train(begin_epoch)
     

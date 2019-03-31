@@ -4,7 +4,7 @@ import os
 from utils import get_tiff_fn
 
 class Dataset:
-    def __init__(self, train_hr_path, train_lr_path, train_mr_path, hr_size, lr_size, valid_lr_path = None):
+    def __init__(self, train_hr_path, train_lr_path, train_mr_path, hr_size, lr_size, mr_size, valid_lr_path = None):
         self.train_lr_path = train_lr_path
         self.train_hr_path = train_hr_path
         self.train_mr_path = train_mr_path
@@ -18,6 +18,8 @@ class Dataset:
 
         self.lr_size = lr_size
         self.hr_size = hr_size
+        self.mr_size = mr_size
+
         self.prepared = False
 
     def _load_training_data(self):
@@ -53,7 +55,7 @@ class Dataset:
             return images_set
 
         self.training_data_lr = _read_images(self.train_lr_path, self.lr_size)
-        self.training_data_mr = _read_images(self.train_mr_path, self.lr_size)
+        self.training_data_mr = _read_images(self.train_mr_path, self.mr_size)
         self.training_data_hr = _read_images(self.train_hr_path, self.hr_size)
         if self.hasValidation:
             self.valid_data_lr = _read_images(self.valid_lr_path, self.lr_size)

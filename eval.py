@@ -6,10 +6,12 @@ import time
 
 from config import *
 from utils import read_all_images, write3d
-from dbpn import DBPN
-from res_dense_net import res_dense_net
+from model import DBPN, res_dense_net
 
 def evaluate(epoch):
+
+    using_batch_norm = config.TRAIN.using_batch_norm 
+
     #checkpoint_dir = "checkpoint/"
     checkpoint_dir = config.TRAIN.ckpt_dir
     lr_size = config.VALID.lr_img_size
@@ -24,7 +26,7 @@ def evaluate(epoch):
     with tf.device('/gpu:0'):
         resolver = DBPN(LR, upscale=False, name='resolver')
     with tf.device('/gpu:1'):
-        interpolator = res_dense_net(resolver.outputs, reuse=False, name='interpolator')
+        interpolator = res_dense_net(resolver.outputs, reuse=False, bn=using_batch_norm,  name='interpolator')
 
   
     resolve_ckpt_found = False
@@ -42,7 +44,7 @@ def evaluate(epoch):
             if resolve_ckpt_found and interp_ckpt_found:
                 break
 
-    interp_ckpt_file = 'checkpoint/brain_conv3_epoch1000.npz'
+    #interp_ckpt_file = 'checkpoint/brain_conv3_epoch1000.npz'
 
     if not (resolve_ckpt_found and interp_ckpt_found):
         raise Exception('no such checkpoint file')
@@ -50,8 +52,8 @@ def evaluate(epoch):
     with tf.Session(config=tf.ConfigProto(allow_soft_placement=True, log_device_placement=False)) as sess:
         tl.layers.initialize_global_variables(sess)
         tl.files.load_and_assign_npz(sess=sess, name=checkpoint_dir + '/' + resolve_ckpt_file, network=resolver)
-        #tl.files.load_and_assign_npz(sess=sess, name=checkpoint_dir + '/' + interp_ckpt_file, network=interpolator)
-        tl.files.load_and_assign_npz(sess=sess, name=interp_ckpt_file, network=interpolator)
+        tl.files.load_and_assign_npz(sess=sess, name=checkpoint_dir + '/' + interp_ckpt_file, network=interpolator)
+        #tl.files.load_and_assign_npz(sess=sess, name=interp_ckpt_file, network=interpolator)
         
         for idx in range(0,len(valid_lr_imgs)):
             

@@ -1,7 +1,7 @@
 import tensorflow as tf
 import tensorlayer as tl
 
-from .custom import conv3d, batch_norm, concat, LReluLayer, ReluLayer, SubvoxelConv
+from .custom import conv3d, batch_norm, concat, LReluLayer, ReluLayer, SubVoxelConv
 
 __all__ = ['unet3d']
 
@@ -10,7 +10,7 @@ def upconv3d(layer, out_channels, factor=2, mode='subpixel', act=tf.identity, na
         if mode == 'subpixel':
             in_channels = layer.outputs.shape.as_list()[-1]
             n = conv3d(layer, out_channels*(factor**3), 1, 1, act=tf.identity)
-            n = SubvoxelConv(n, scale=factor, n_out_channel=None, act=act, name=mode)
+            n = SubVoxelConv(n, scale=factor, n_out_channel=None, act=act, name=mode)
             return n
             
         elif mode == 'deconv':
