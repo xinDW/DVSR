@@ -50,6 +50,8 @@ def res_dense_net(lr, factor=4, conv_kernel=3, reuse=False, bn=False, is_train=T
       -is_train: paramete with the identical name in tl.layer.BatchNormLayer (only valid when 'bn' == True)
       -format_out: if False, keep the increased pixels in channels dimension. Else re-arrange them into spatial dimensions(what the SubvoxelConv does exactly)
     '''
+    assert factor in [1, 2, 3, 4]
+
     G0 = 64
     with tf.variable_scope(name, reuse=reuse):
       n = InputLayer(lr, 'lr')
@@ -84,11 +86,13 @@ def res_dense_net(lr, factor=4, conv_kernel=3, reuse=False, bn=False, is_train=T
         elif factor == 2:
           #n8 = conv3d(n7, out_channels=8, filter_size=3, name='conv3')
           n8 = upscale(n7, scale=2, name='upscale1')
-          
+        else :
+          n8 = n7
         out = conv3d(n8, out_channels=1, filter_size=conv_kernel, act=tf.tanh, name='out')
     
       else:
         out = n7
+
       return out        
         
 
