@@ -4,10 +4,26 @@ import os
 from utils import get_tiff_fn
 
 class Dataset:
-    def __init__(self, train_hr_path, train_lr_path, train_mr_path, hr_size, lr_size, mr_size, valid_lr_path = None):
+    def __init__(self, 
+        lr_size, 
+        hr_size,
+        mr_size,
+        train_lr_path,
+        train_hr_path,
+        train_mr_path,
+        test_lr_path,
+        test_hr_path,
+        valid_lr_path=None):  
+        
+        self.lr_size = lr_size
+        self.hr_size = hr_size
+        self.mr_size = mr_size
+
         self.train_lr_path = train_lr_path
         self.train_hr_path = train_hr_path
         self.train_mr_path = train_mr_path
+        self.test_lr_path = test_lr_path
+        self.test_hr_path = test_hr_path
 
         ## if LR measurement is designated for validation during the trianing
         if valid_lr_path is not None:
@@ -15,10 +31,6 @@ class Dataset:
             self.hasValidation = True
         else:
             self.hasValidation = False
-
-        self.lr_size = lr_size
-        self.hr_size = hr_size
-        self.mr_size = mr_size
 
         self.prepared = False
 
@@ -57,6 +69,10 @@ class Dataset:
         self.training_data_lr = _read_images(self.train_lr_path, self.lr_size)
         self.training_data_mr = _read_images(self.train_mr_path, self.mr_size)
         self.training_data_hr = _read_images(self.train_hr_path, self.hr_size)
+
+        self.test_data_lr = _read_images(self.test_lr_path, self.lr_size)
+        self.test_data_hr = _read_images(self.test_hr_path, self.hr_size)
+
         if self.hasValidation:
             self.valid_data_lr = _read_images(self.valid_lr_path, self.lr_size)
         
@@ -98,7 +114,8 @@ class Dataset:
     #  -valid : validation data (also called development set) is used to choose a model, thus LR measurement is the valid date.
 
     def for_test(self):
-        return self.training_data_hr[0 : self.batch_size], self.training_data_lr[0 : self.batch_size], self.training_data_mr[0 : self.batch_size]
+        #return self.training_data_hr[0 : self.batch_size], self.training_data_lr[0 : self.batch_size], self.training_data_mr[0 : self.batch_size]
+        return relf.test_data_hr, self.test_data_lr
 
     def for_valid(self):
         if self.hasValidation:

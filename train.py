@@ -275,7 +275,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
     begin_epoch = args.ckpt
     
-    dataset = Dataset(train_hr_img_path, train_lr_img_path, train_mr_img_path, hr_size, lr_size, hr_size, valid_lr_img_path)
+    dataset = Dataset(train_hr_img_path, train_lr_img_path, train_mr_img_path, hr_size, lr_size, lr_size, valid_lr_img_path)
     trainer = Trainer(dataset, architecture=archi)
     trainer.build_graph()
     trainer.train(begin_epoch)
