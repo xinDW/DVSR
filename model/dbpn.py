@@ -62,7 +62,7 @@ def d_down_block(x, n_filters, k_size=8, stride=4, act=tf.identity, name='d_down
         l1.outputs = l1.outputs + l0.outputs
         return l1
 
-def DBPN(input, feat=64, base_filter=32, upscale=False, name='dbpn'):
+def DBPN(input, feat=64, base_filter=32, upscale=False, reuse=False, name='dbpn'):
     '''
     Dense-deep Back-projection Net
     Params:
@@ -75,7 +75,7 @@ def DBPN(input, feat=64, base_filter=32, upscale=False, name='dbpn'):
     stride = 4 if upscale else 2
     additional_up_down_pair = 1 if upscale else 2
     
-    with tf.variable_scope(name):
+    with tf.variable_scope(name, reuse=reuse):
         n_channels = input.shape[-1]
         x = InputLayer(input, name='input')
 

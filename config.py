@@ -13,21 +13,20 @@ config.TRAIN.num_gpus = 2
 ## if use single-gpu training  
 config.TRAIN.device_id = 0
 
-config.TRAIN.using_edges_loss = False
-config.TRAIN.using_batch_norm  = True
+config.TRAIN.using_batch_norm  = False
 #label = '3T3_488_bg_factor4_multigpu_cross_entropy'
 #label = '3T3_488_sbg_2stages_factor4_mse'
-label = 'celegans_simu_by_zhaoyuxuan_2stage_dbpn+rdn_factor4_mse'
+#label = 'celegans_simu_by_zhaoyuxuan_2stage_dbpn+rdn_factor4_mse'
 #label = 'whole_brain_training_hr_step1um_2stage_dbpn+rdn_factor4_mse'
 #label = 'brain_simu_by_fangchunyu_hr_step1um_lr_20fps_training_data_xz-transposed_2stage_dbpn+rdn_factor4_mse'
-#label = 'whole+half_brain_training_hr_deconv_step1um_2stage_dbpn+rdn_factor4_mse'
+label = 'whole+half_brain_training_hr_raw_step1um_2stage_dbpn+rdn_factor4_mse'
 config.label = label
 #config.archi = '2stage_interp_first'
 config.archi = '2stage_resolve_first'
 
-config.TRAIN.lr_img_path = "data/brain/brain20190316/cropped_160X160X80_overlap0.20/lr/"
-config.TRAIN.hr_img_path = "data/brain/brain20190316/cropped_160X160X80_overlap0.20/hr_deconv_denoised/"
-config.TRAIN.mr_img_path = "data/brain/brain20190316/cropped_160X160X80_overlap0.20/hr_deconv_denoised/ds/"
+config.TRAIN.lr_img_path = "data/brain/brain20190316/8bit/crop160X160X80/lr/"
+config.TRAIN.hr_img_path = "data/brain/brain20190316/8bit/crop160X160X80/hr/"
+config.TRAIN.mr_img_path = "data/brain/brain20190316/8bit/crop160X160X80/hr/ds/"
 #config.TRAIN.lr_img_path = "data/train/3T3/488/factor4_sbg/cropped64X64X16_overlap0.20-0.20-0.20/all/dynamic_range_adjusted/"
 #config.TRAIN.hr_img_path = "data/train/3T3/488/factor4_sbg/cropped256X256X64_overlap0.20-0.20-0.20/all/dynamic_range_adjusted/"
 #config.TRAIN.mr_img_path = "data/train/3T3/488/factor4_sbg/cropped256X256X64_overlap0.20-0.20-0.20/all/dynamic_range_adjusted/ds/"
@@ -48,8 +47,7 @@ config.TRAIN.lr_decay = 0.5
 config.TRAIN.conv_kernel = 3
 config.TRAIN.learning_rate_init = 1e-4
 
-#config.VALID.lr_img_path = "data/brain/brain20190316/valid_3.2X_40X40X20/"
-config.VALID.lr_img_path = "H:/test_forzhanghao/20x_1.0data/sbg+deblur/subregion/sub/"
+config.VALID.lr_img_path = "data/brain/brain20190316/valid_3.2X_40X40X20/"
 config.VALID.lr_img_size = [21,200,100,1] # [depth, height, width, channels]
 #config.VALID.saving_path = "sample/validate/conv_kernel%d/" % config.TRAIN.conv_kernel
 config.VALID.saving_path = "data/recon/{}/".format(label)

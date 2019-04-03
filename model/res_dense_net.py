@@ -41,7 +41,7 @@ def res_dense_block(preceding, G=64, conv_kernel=3, bn=False, is_train=True, nam
 def upscale(layer, scale=2, name='upscale'):
     return SubVoxelConv(layer, scale=scale, n_out_channel=None, act=tf.identity, name=name)
 
-def res_dense_net(lr, factor=4, conv_kernel=3, reuse=False, bn=False, is_train=True, format_out=True, name='RDN'):
+def res_dense_net(lr, factor=4, conv_kernel=3, bn=False, is_train=True, format_out=True, reuse=False, name='RDN'):
     '''Residual Dense net
     Params:
       -factor: super-resolution enhancement factor 

@@ -13,3 +13,5 @@
 /**/test*.py
 /train_dfe.py
 /*.txt
+/config/
+/*.exe

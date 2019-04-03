@@ -13,6 +13,7 @@ class Dataset:
         train_mr_path,
         test_lr_path,
         test_hr_path,
+        test_mr_path,
         valid_lr_path=None):  
         
         self.lr_size = lr_size
@@ -24,6 +25,7 @@ class Dataset:
         self.train_mr_path = train_mr_path
         self.test_lr_path = test_lr_path
         self.test_hr_path = test_hr_path
+        self.test_mr_path = test_mr_path
 
         ## if LR measurement is designated for validation during the trianing
         if valid_lr_path is not None:
@@ -72,7 +74,8 @@ class Dataset:
 
         self.test_data_lr = _read_images(self.test_lr_path, self.lr_size)
         self.test_data_hr = _read_images(self.test_hr_path, self.hr_size)
-
+        self.test_data_mr = _read_images(self.test_mr_path, self.mr_size)
+        
         if self.hasValidation:
             self.valid_data_lr = _read_images(self.valid_lr_path, self.lr_size)
         
@@ -103,7 +106,7 @@ class Dataset:
         self.n_epochs = n_epochs
 
         self.cursor = batch_size
-        self.epoch = 0
+        self.epoch = 1
         self.prepared = True
         
         print('HR dataset : %s\nLR dataset: %s\nMR dataset: %s\n' % (str(self.training_data_hr.shape), str(self.training_data_lr.shape), str(self.training_data_mr.shape)))
@@ -115,7 +118,7 @@ class Dataset:
 
     def for_test(self):
         #return self.training_data_hr[0 : self.batch_size], self.training_data_lr[0 : self.batch_size], self.training_data_mr[0 : self.batch_size]
-        return relf.test_data_hr, self.test_data_lr
+        return self.test_data_hr, self.test_data_lr, self.test_data_mr
 
     def for_valid(self):
         if self.hasValidation:
@@ -129,10 +132,10 @@ class Dataset:
     def iter(self):
        
         
-        if self.epoch < self.n_epochs - 1:
-            if self.cursor + self.batch_size >= self.training_pair_num:
+        if self.epoch < self.n_epochs:
+            if self.cursor + self.batch_size > self.training_pair_num:
                 self.epoch += 1
-                self.cursor = self.batch_size
+                self.cursor = 0
 
             idx = self.cursor
             bth = self.batch_size
@@ -143,3 +146,6 @@ class Dataset:
                 
         else:
             return None, None, None, self.cursor, self.epoch
+
+    def test_pair_nums(self):
+        return self.test_data_lr.shape[0]

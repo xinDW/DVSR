@@ -73,6 +73,27 @@ def get_tiff_fn(file, path):
     image = image[..., np.newaxis]       # [depth, height, width, channels=1]
     image = normalize_fn(image)
     return image
+
+def generate_mr_fn(image, mode='ds', **kwargs) :
+    """
+    Params:
+        -image: the source HR image, [depth, height, width, channels=1]
+        -mode: 'ds'   -- down-sample only
+               'blur' -- blur only
+    """ 
+    assert mode in ['ds', 'blur']
+    depth, height, width, channels = image.shape.as_list()
+    if mode == 'ds':
+        factor = kwargs['factor']
+        tmp = np.zeros([depth//factor, height//factor, width//factor, channels])
+        for i in range(0, depth, factor):
+            d = i // factor
+            tmp[d, :, :, :] = tmp[d, :, :, :] + image[i, ::factor, ::factor, :]
+        end
+        tmp = tmp / factor
+    else :
+        tmp = image
+    return tmp
     
 def crop_img_fn(img, size, is_random=False):
     #img = crop(img, wrg=size[0], hrg=size[1], is_random=is_random)
