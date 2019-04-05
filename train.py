@@ -16,7 +16,7 @@ lr_size = config.TRAIN.img_size_lr # [depth height width channels]
 hr_size = config.TRAIN.img_size_hr
 
 label = config.label
-
+device_id = config.TRAIN.device_id
 conv_kernel = config.TRAIN.conv_kernel
 using_batch_norm = config.TRAIN.using_batch_norm 
 
@@ -75,7 +75,7 @@ class Trainer:
 
             if ('resolve_first' in self.archi):
                 self.MR = tf.placeholder("float", [batch_size] + lr_size, name="MR")  
-                with tf.device('/gpu:0'):
+                with tf.device('/gpu:%d' % device_id):
                     resolver = DBPN(self.LR, upscale=False, name=variable_tag_n1)
                 #with tf.device('/gpu:1'):
                     interpolator = res_dense_net(resolver.outputs, conv_kernel=conv_kernel, bn=using_batch_norm, is_train=True, name=variable_tag_n2)
@@ -99,12 +99,13 @@ class Trainer:
 
                 training_loss_resolve = mean_squared_error(self.HR, resolver.outputs, is_mean=True)
                 training_loss_interp = mean_squared_error(self.MR, interpolator.outputs, is_mean=True)    
-            #resolver.print_params(False)
-            #interpolator.print_params(False)
+
+            resolver.print_params(details=False)
+            interpolator.print_params(details=False)
 
             vars_n1 = tl.layers.get_variables_with_name(variable_tag_n1, train_only=True, printable=False)
             vars_n2 = tl.layers.get_variables_with_name(variable_tag_n2, train_only=True, printable=False)
-
+            
             #training_loss_resolve = mean_squared_error(self.MR, resolver.outputs, is_mean=True)
             #training_loss_interp = mean_squared_error(self.HR, interpolator.outputs, is_mean=True)
             training_loss = training_loss_resolve + training_loss_interp
@@ -200,19 +201,7 @@ class Trainer:
                     valid_lr_batch = self.valid_lr[idx : idx + batch_size]
                     self._valid_on_the_fly(sess, epoch, idx, valid_lr_batch)
 
-    def train(self, begin_epoch=0):
-        
-        configProto = tf.ConfigProto(allow_soft_placement=True, log_device_placement=False)
-        configProto.gpu_options.allow_growth = True
-        sess = tf.Session(config=configProto)
-        sess.run(tf.global_variables_initializer())
-
-        tl.files.exists_or_mkdir(checkpoint_dir)
-        tl.files.exists_or_mkdir(test_saving_dir)
-
-        training_dataset = self.dataset
-        n_training_pairs = training_dataset.prepare(batch_size, n_epoch - begin_epoch)
-
+    def _make_summaries(self, sess):
         # tensorflow summary
         tf.summary.scalar('learning_rate', self.learning_rate_var) 
         for name, loss in self.loss.items():       
@@ -220,37 +209,46 @@ class Trainer:
         for name, loss in self.test_loss.items():       
             tf.summary.scalar(name, loss)
 
-        summary_loss_train = tf.summary.merge(tf.get_collection(tf.GraphKeys.SUMMARIES), 'training_loss')
-        summary_loss_test = tf.summary.merge(tf.get_collection(tf.GraphKeys.SUMMARIES), 'test_loss')
+        self.summary_op = tf.summary.merge_all()
+
+        self.training_loss_writer = tf.summary.FileWriter(log_dir + 'training', sess.graph)
+        self.test_loss_writer = tf.summary.FileWriter(log_dir + 'test')
+
+    def train(self, begin_epoch=0):
         
-        summary_writer = tf.summary.FileWriter(log_dir, sess.graph)
+        configProto = tf.ConfigProto(allow_soft_placement=True, log_device_placement=False)
+        configProto.gpu_options.allow_growth = True
+        sess = tf.Session(config=configProto)
+        sess.run(tf.global_variables_initializer())
+        sess.run(tf.assign(self.learning_rate_var, learning_rate_init))
+
+        tl.files.exists_or_mkdir(checkpoint_dir)
+        tl.files.exists_or_mkdir(test_saving_dir)
+
+        training_dataset = self.dataset
+        n_training_pairs = training_dataset.prepare(batch_size, n_epoch - begin_epoch)
 
         if config.VALID.on_the_fly:
-            valid_lr = self.dataset.for_valid()
-            self.valid_lr = valid_lr
-            write3d(valid_lr, test_saving_dir+'valid_lr.tif')
+            self.valid_lr = self.dataset.for_valid()
+            write3d(self.valid_lr, test_saving_dir+'valid_lr.tif')
         
-        test_hr, test_lr, test_mr = training_dataset.for_test()
-        self.test_lr = test_lr
-        self.test_hr = test_hr
-        self.test_mr = test_mr
+        self.test_hr, self.test_lr, self.test_mr = training_dataset.for_test()
 
-        write3d(test_lr, test_saving_dir+'test_lr.tif')
-        write3d(test_hr, test_saving_dir+'test_hr.tif')
+        write3d(self.test_lr, test_saving_dir+'test_lr.tif')
+        write3d(self.test_hr, test_saving_dir+'test_hr.tif')
         if ('2stage' in self.archi):
-            write3d(test_mr, test_saving_dir+'test_mr.tif')
+            write3d(self.test_mr, test_saving_dir+'test_mr.tif')
         
+        self._make_summaries(sess)
         
         begin_epoch = self._load_designated_ckpt(begin_epoch, sess)   
             
-        sess.run(tf.assign(self.learning_rate_var, learning_rate_init))
-        print("learning rate : %f" % learning_rate_init)
         
         """
         training
         """
         fetches = dict(self.loss, **(self.optim))
-        fetches['batch_summary'] = summary_loss_train
+        fetches['batch_summary'] = self.summary_op
 
         while training_dataset.hasNext():
             step_time = time.time()
@@ -267,7 +265,9 @@ class Trainer:
             print("Epoch:[%d/%d] iter:[%d/%d] times: %4.3fs" % (epoch, n_epoch, cursor + 1, n_training_pairs, time.time() - step_time))
             losses_val = {name : value for name, value in evaluated.items() if 'loss' in name}
             print(losses_val)
-            summary_writer.add_summary(evaluated['batch_summary'], epoch * (n_training_pairs // batch_size) + cursor / batch_size)
+
+            n_iters_passed = epoch * (n_training_pairs // batch_size) + cursor / batch_size
+            self.training_loss_writer.add_summary(evaluated['batch_summary'], n_iters_passed)
 
             if (epoch !=0) and (epoch%ckpt_saving_interval == 0) and (cursor == n_training_pairs - 1):
                 self._save_intermediate_ckpt(epoch, sess)
@@ -277,11 +277,11 @@ class Trainer:
                         test_hr_batch = self.test_hr[idx : idx + batch_size]
                         test_mr_batch = self.test_mr[idx : idx + batch_size]
 
-                        out_resolver, out_interp, summary_t_loss = sess.run([self.resolver.outputs, self.interpolator.outputs, summary_loss_test], 
+                        out_resolver, out_interp, summary_t_loss = sess.run([self.resolver.outputs, self.interpolator.outputs, self.summary_op], 
                             {self.LR : test_lr_batch, self.HR : test_hr_batch, self.MR : test_mr_batch})
                         write3d(out_resolver, test_saving_dir+'mr_test_epoch{}_{}.tif'.format(epoch, idx))
                         write3d(out_interp, test_saving_dir+'hr_test_epoch{}_{}.tif'.format(epoch, idx))
-                summary_writer.add_summary(summary_t_loss, epoch)
+                self.test_loss_writer.add_summary(summary_t_loss, n_iters_passed)
           
             
 if __name__ == '__main__':
