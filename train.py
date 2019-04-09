@@ -24,7 +24,7 @@ beta1 = config.TRAIN.beta1
 n_epoch = config.TRAIN.n_epoch
 
 learning_rate_init = config.TRAIN.learning_rate_init
-decay_every = int(n_epoch / 2)
+decay_every = config.TRAIN.decay_every 
 learning_rate_decay = 0.1
 
 checkpoint_dir = config.TRAIN.ckpt_dir
@@ -66,39 +66,45 @@ class Trainer:
         with tf.variable_scope('learning_rate'):
             self.learning_rate_var = tf.Variable(learning_rate_init, trainable=False)
         
-        self.LR = tf.placeholder("float", [batch_size] + lr_size, name="LR")       
-        self.HR = tf.placeholder("float", [batch_size] + hr_size, name="HR")
+        self.plchdr_lr = tf.placeholder("float", [batch_size] + lr_size, name="LR")       
+        self.plchdr_hr = tf.placeholder("float", [batch_size] + hr_size, name="HR")
 
         if ('2stage' in self.archi):
             variable_tag_n1 = 'Resolve'
             variable_tag_n2 = 'Interp'
 
             if ('resolve_first' in self.archi):
-                self.MR = tf.placeholder("float", [batch_size] + lr_size, name="MR")  
+                self.plchdr_mr = tf.placeholder("float", [batch_size] + lr_size, name="MR")  
                 with tf.device('/gpu:%d' % device_id):
-                    resolver = DBPN(self.LR, upscale=False, name=variable_tag_n1)
+                    resolver = DBPN(self.plchdr_lr, upscale=False, name=variable_tag_n1)
                 #with tf.device('/gpu:1'):
                     interpolator = res_dense_net(resolver.outputs, conv_kernel=conv_kernel, bn=using_batch_norm, is_train=True, name=variable_tag_n2)
 
-                training_loss_resolve = mean_squared_error(self.MR, resolver.outputs, is_mean=True)
-                training_loss_interp = mean_squared_error(self.HR, interpolator.outputs, is_mean=True)
+                training_loss_resolve = mean_squared_error(self.plchdr_mr, resolver.outputs, is_mean=True)
+                training_loss_interp = mean_squared_error(self.plchdr_hr, interpolator.outputs, is_mean=True)
 
-                resolver_test = DBPN(self.LR, upscale=False, reuse=True, name=variable_tag_n1)
+                resolver_test = DBPN(self.plchdr_lr, upscale=False, reuse=True, name=variable_tag_n1)
                 interpolator_test = res_dense_net(resolver_test.outputs, conv_kernel=conv_kernel, bn=using_batch_norm, is_train=False, reuse=True, name=variable_tag_n2)
                
-                test_loss_resolve = mean_squared_error(self.MR, resolver_test.outputs, is_mean=True)
-                test_loss_interp = mean_squared_error(self.HR, interpolator_test.outputs, is_mean=True)
-                test_loss = test_loss_interp + test_loss_resolve
+                test_loss_resolve = mean_squared_error(self.plchdr_mr, resolver_test.outputs, is_mean=True)
+                test_loss_interp = mean_squared_error(self.plchdr_hr, interpolator_test.outputs, is_mean=True)
 
             else :
-                self.MR = tf.placeholder("float", [batch_size] + hr_size)   
-                with tf.device('/gpu:1'):
-                    interpolator = DBPN(self.LR, upscale=True, name=variable_tag_n1)
+                self.plchdr_mr = tf.placeholder("float", [batch_size] + hr_size, name='MR')   
                 with tf.device('/gpu:0'):
-                    resolver = res_dense_net(interpolator.outputs, factor=1, conv_kernel=conv_kernel, reuse=False, bn=using_batch_norm, is_train=True, name=variable_tag_n2)
+                    interpolator = DBPN(self.plchdr_lr, upscale=True, name=variable_tag_n2)
+                with tf.device('/gpu:1'):
+                    resolver = res_dense_net(interpolator.outputs, factor=1, conv_kernel=conv_kernel, reuse=False, bn=using_batch_norm, is_train=True, name=variable_tag_n1)
 
-                training_loss_resolve = mean_squared_error(self.HR, resolver.outputs, is_mean=True)
-                training_loss_interp = mean_squared_error(self.MR, interpolator.outputs, is_mean=True)    
+                training_loss_interp = mean_squared_error(self.plchdr_mr, interpolator.outputs, is_mean=True)    
+                training_loss_resolve = mean_squared_error(self.plchdr_hr, resolver.outputs, is_mean=True)
+               
+                interpolator_test =  DBPN(self.plchdr_lr, upscale=True, reuse=True, name=variable_tag_n2)
+                resolver_test = res_dense_net(interpolator_test.outputs, factor=1, conv_kernel=conv_kernel, reuse=True, bn=using_batch_norm, is_train=False, name=variable_tag_n1)
+                
+                test_loss_interp = mean_squared_error(self.plchdr_mr, interpolator_test.outputs, is_mean=True)
+                test_loss_resolve = mean_squared_error(self.plchdr_hr, resolver_test.outputs, is_mean=True)
+                
 
             resolver.print_params(details=False)
             interpolator.print_params(details=False)
@@ -106,19 +112,19 @@ class Trainer:
             vars_n1 = tl.layers.get_variables_with_name(variable_tag_n1, train_only=True, printable=False)
             vars_n2 = tl.layers.get_variables_with_name(variable_tag_n2, train_only=True, printable=False)
             
-            #training_loss_resolve = mean_squared_error(self.MR, resolver.outputs, is_mean=True)
-            #training_loss_interp = mean_squared_error(self.HR, interpolator.outputs, is_mean=True)
             training_loss = training_loss_resolve + training_loss_interp
+            test_loss = test_loss_interp + test_loss_resolve
 
             #n1_optim = tf.train.AdamOptimizer(self.learning_rate_var, beta1=beta1).minimize(training_loss, var_list=vars_n1)
             #n2_optim = tf.train.AdamOptimizer(self.learning_rate_var, beta1=beta1).minimize(training_loss_interp, var_list=vars_n2)
-            n1_optim = tf.train.AdamOptimizer(self.learning_rate_var, beta1=beta1).minimize(training_loss_interp)
-            n2_optim = tf.train.AdamOptimizer(self.learning_rate_var, beta1=beta1).minimize(training_loss_resolve)
+            #n1_optim = tf.train.AdamOptimizer(self.learning_rate_var, beta1=beta1).minimize(training_loss_interp)
+            #n2_optim = tf.train.AdamOptimizer(self.learning_rate_var, beta1=beta1).minimize(training_loss_resolve)
             n_optim = tf.train.AdamOptimizer(self.learning_rate_var, beta1=beta1).minimize(training_loss)
 
             self.loss.update({'training_loss' : training_loss, 'training_loss_interp' : training_loss_interp, 'training_loss_resolve' : training_loss_resolve})
             self.test_loss.update({'test_loss' : test_loss, 'test_loss_interp' : test_loss_interp, 'test_loss_resolve' : test_loss_resolve})
-            self.optim.update({'n1_optim' : n1_optim, 'n2_optim' : n2_optim, 'n_optim' : n_optim})
+            #self.optim.update({'n1_optim' : n1_optim, 'n2_optim' : n2_optim, 'n_optim' : n_optim})
+            self.optim.update({'n_optim' : n_optim})
 
             self.resolver = resolver
             self.interpolator = interpolator
@@ -127,11 +133,11 @@ class Trainer:
             variable_tag = 'rdn'
             
             with tf.device('/gpu:1'):
-                net = res_dense_net(self.LR, reuse=False, name=variable_tag)
+                net = res_dense_net(self.plchdr_lr, reuse=False, name=variable_tag)
 
             net_vars = tl.layers.get_variables_with_name(variable_tag, train_only=True, printable=False)
 
-            l2_loss = mean_squared_error(self.HR, net.outputs, is_mean=True)
+            l2_loss = mean_squared_error(self.plchdr_hr, net.outputs, is_mean=True)
 
             l2_optim = tf.train.AdamOptimizer(self.learning_rate_var, beta1=beta1).minimize(l2_loss, var_list=net_vars)
 
@@ -153,7 +159,7 @@ class Trainer:
         return begin
 
     def _valid_on_the_fly(self, sess, epoch, batch_idx, valid_lr_batch, init_training=False):
-        out_valid = sess.run(self.interpolator.outputs, {self.LR : valid_lr_batch})
+        out_valid = sess.run(self.interpolator.outputs, {self.plchdr_lr : valid_lr_batch})
         if init_training:
             saving_path = test_saving_dir+'valid_epoch{}-{}_init.tif'.format(epoch, batch_idx)
         else:
@@ -261,7 +267,7 @@ class Trainer:
                 sess.run(tf.assign(self.learning_rate_var, learning_rate_init * new_lr_decay))
                 print('\nlearning rate updated : %f\n' % (learning_rate_init * new_lr_decay))
 
-            evaluated = sess.run(fetches, {self.LR : LR_batch, self.HR : HR_batch, self.MR : MR_batch})
+            evaluated = sess.run(fetches, {self.plchdr_lr : LR_batch, self.plchdr_hr : HR_batch, self.plchdr_mr : MR_batch})
             print("Epoch:[%d/%d] iter:[%d/%d] times: %4.3fs" % (epoch, n_epoch, cursor + 1, n_training_pairs, time.time() - step_time))
             losses_val = {name : value for name, value in evaluated.items() if 'loss' in name}
             print(losses_val)
@@ -278,7 +284,7 @@ class Trainer:
                         test_mr_batch = self.test_mr[idx : idx + batch_size]
 
                         out_resolver, out_interp, summary_t_loss = sess.run([self.resolver.outputs, self.interpolator.outputs, self.summary_op], 
-                            {self.LR : test_lr_batch, self.HR : test_hr_batch, self.MR : test_mr_batch})
+                            {self.plchdr_lr : test_lr_batch, self.plchdr_hr : test_hr_batch, self.plchdr_mr : test_mr_batch})
                         write3d(out_resolver, test_saving_dir+'mr_test_epoch{}_{}.tif'.format(epoch, idx))
                         write3d(out_interp, test_saving_dir+'hr_test_epoch{}_{}.tif'.format(epoch, idx))
                 self.test_loss_writer.add_summary(summary_t_loss, n_iters_passed)
@@ -296,13 +302,15 @@ if __name__ == '__main__':
     train_hr_path = config.TRAIN.hr_img_path
     train_mr_path = config.TRAIN.mr_img_path
     valid_lr_path = config.VALID.lr_img_path if config.VALID.on_the_fly else None # lr measuremnet for validation during the training   
-    test_lr_path = train_lr_path + 'test/'
-    test_hr_path = train_hr_path + 'test/'
-    test_mr_path = train_mr_path + 'test/'
+
+    test_data_dir = config.TRAIN.test_data_path
+    test_lr_path = test_data_dir + 'lr/'
+    test_hr_path = test_data_dir + 'hr/'
+    test_mr_path = test_data_dir +  'mr/'
 
     mr_size = lr_size if config.archi == '2stage_resolve_first' else hr_size
 
-    dataset = Dataset(lr_size, hr_size, lr_size, 
+    dataset = Dataset(lr_size, hr_size, mr_size, 
         train_lr_path, train_hr_path, train_mr_path, 
         test_lr_path, test_hr_path, test_mr_path, valid_lr_path)
 
