@@ -59,7 +59,7 @@ class Trainer:
         self.archi = architecture
         self.dataset = dataset
         self.loss = {}
-        self.test_loss = {}
+        self.loss_test = {}
         self.optim = {}
 
     def build_graph(self):
@@ -70,64 +70,59 @@ class Trainer:
         self.plchdr_hr = tf.placeholder("float", [batch_size] + hr_size, name="HR")
 
         if ('2stage' in self.archi):
-            variable_tag_n1 = 'Resolve'
-            variable_tag_n2 = 'Interp'
+            variable_tag_res = 'Resolve'
+            variable_tag_interp = 'Interp'
 
             if ('resolve_first' in self.archi):
                 self.plchdr_mr = tf.placeholder("float", [batch_size] + lr_size, name="MR")  
                 with tf.device('/gpu:%d' % device_id):
-                    resolver = DBPN(self.plchdr_lr, upscale=False, name=variable_tag_n1)
+                    net_stage1 = DBPN(self.plchdr_lr, upscale=False, name=variable_tag_res)
                 #with tf.device('/gpu:1'):
-                    interpolator = res_dense_net(resolver.outputs, conv_kernel=conv_kernel, bn=using_batch_norm, is_train=True, name=variable_tag_n2)
+                    net_stage2 = res_dense_net(net_stage1.outputs, conv_kernel=conv_kernel, bn=using_batch_norm, is_train=True, name=variable_tag_interp)
 
-                training_loss_resolve = mean_squared_error(self.plchdr_mr, resolver.outputs, is_mean=True)
-                training_loss_interp = mean_squared_error(self.plchdr_hr, interpolator.outputs, is_mean=True)
+                self.resolver = net_stage1
+                self.interpolator = net_stage2
 
-                resolver_test = DBPN(self.plchdr_lr, upscale=False, reuse=True, name=variable_tag_n1)
-                interpolator_test = res_dense_net(resolver_test.outputs, conv_kernel=conv_kernel, bn=using_batch_norm, is_train=False, reuse=True, name=variable_tag_n2)
+                net_stage1_test = DBPN(self.plchdr_lr, upscale=False, reuse=True, name=variable_tag_res)
+                net_stage2_test = res_dense_net(net_stage1_test.outputs, conv_kernel=conv_kernel, bn=using_batch_norm, is_train=False, reuse=True, name=variable_tag_interp)
                
-                test_loss_resolve = mean_squared_error(self.plchdr_mr, resolver_test.outputs, is_mean=True)
-                test_loss_interp = mean_squared_error(self.plchdr_hr, interpolator_test.outputs, is_mean=True)
-
             else :
                 self.plchdr_mr = tf.placeholder("float", [batch_size] + hr_size, name='MR')   
                 with tf.device('/gpu:0'):
-                    interpolator = DBPN(self.plchdr_lr, upscale=True, name=variable_tag_n2)
+                    net_stage1 = res_dense_net(self.plchdr_lr, factor=4, conv_kernel=conv_kernel, reuse=False, bn=using_batch_norm, is_train=True, name=variable_tag_interp)
                 with tf.device('/gpu:1'):
-                    resolver = res_dense_net(interpolator.outputs, factor=1, conv_kernel=conv_kernel, reuse=False, bn=using_batch_norm, is_train=True, name=variable_tag_n1)
+                    net_stage2 = DBPN(net_stage1.outputs, upscale=False, name=variable_tag_res)
 
-                training_loss_interp = mean_squared_error(self.plchdr_mr, interpolator.outputs, is_mean=True)    
-                training_loss_resolve = mean_squared_error(self.plchdr_hr, resolver.outputs, is_mean=True)
-               
-                interpolator_test =  DBPN(self.plchdr_lr, upscale=True, reuse=True, name=variable_tag_n2)
-                resolver_test = res_dense_net(interpolator_test.outputs, factor=1, conv_kernel=conv_kernel, reuse=True, bn=using_batch_norm, is_train=False, name=variable_tag_n1)
+                self.resolver = net_stage2
+                self.interpolator = net_stage1
+
+                net_stage1_test =  res_dense_net(self.plchdr_lr, bn=using_batch_norm, is_train=False, reuse=True, name=variable_tag_interp)
+                net_stage2_test = DBPN(net_stage1_test.outputs, upscale=False, reuse=True, name=variable_tag_res)
                 
-                test_loss_interp = mean_squared_error(self.plchdr_mr, interpolator_test.outputs, is_mean=True)
-                test_loss_resolve = mean_squared_error(self.plchdr_hr, resolver_test.outputs, is_mean=True)
-                
+            net_stage1.print_params(details=False)
+            net_stage2.print_params(details=False)
 
-            resolver.print_params(details=False)
-            interpolator.print_params(details=False)
-
-            vars_n1 = tl.layers.get_variables_with_name(variable_tag_n1, train_only=True, printable=False)
-            vars_n2 = tl.layers.get_variables_with_name(variable_tag_n2, train_only=True, printable=False)
+            #vars_n1 = tl.layers.get_variables_with_name(variable_tag_res, train_only=True, printable=False)
+            #vars_n2 = tl.layers.get_variables_with_name(variable_tag_interp, train_only=True, printable=False)
             
-            training_loss = training_loss_resolve + training_loss_interp
-            test_loss = test_loss_interp + test_loss_resolve
+            loss_training_n1 = mean_squared_error(self.plchdr_mr, net_stage1.outputs, is_mean=True)
+            loss_training_n2 = mean_squared_error(self.plchdr_hr, net_stage2.outputs, is_mean=True)
+            loss_test_n1 = mean_squared_error(self.plchdr_mr, net_stage1_test.outputs, is_mean=True)
+            loss_test_n2 = mean_squared_error(self.plchdr_hr, net_stage2_test.outputs, is_mean=True)
 
-            #n1_optim = tf.train.AdamOptimizer(self.learning_rate_var, beta1=beta1).minimize(training_loss, var_list=vars_n1)
-            #n2_optim = tf.train.AdamOptimizer(self.learning_rate_var, beta1=beta1).minimize(training_loss_interp, var_list=vars_n2)
-            #n1_optim = tf.train.AdamOptimizer(self.learning_rate_var, beta1=beta1).minimize(training_loss_interp)
-            #n2_optim = tf.train.AdamOptimizer(self.learning_rate_var, beta1=beta1).minimize(training_loss_resolve)
-            n_optim = tf.train.AdamOptimizer(self.learning_rate_var, beta1=beta1).minimize(training_loss)
+            loss_training = loss_training_n1 + loss_training_n2
+            loss_test = loss_test_n2 + loss_test_n1
 
-            self.loss.update({'training_loss' : training_loss, 'training_loss_interp' : training_loss_interp, 'training_loss_resolve' : training_loss_resolve})
-            self.test_loss.update({'test_loss' : test_loss, 'test_loss_interp' : test_loss_interp, 'test_loss_resolve' : test_loss_resolve})
+            #n1_optim = tf.train.AdamOptimizer(self.learning_rate_var, beta1=beta1).minimize(loss_training, var_list=vars_n1)
+            #n2_optim = tf.train.AdamOptimizer(self.learning_rate_var, beta1=beta1).minimize(loss_training_n2, var_list=vars_n2)
+            #n1_optim = tf.train.AdamOptimizer(self.learning_rate_var, beta1=beta1).minimize(loss_training_n2)
+            #n2_optim = tf.train.AdamOptimizer(self.learning_rate_var, beta1=beta1).minimize(loss_training_n1)
+            n_optim = tf.train.AdamOptimizer(self.learning_rate_var, beta1=beta1).minimize(loss_training)
+
+            self.loss.update({'loss_training' : loss_training, 'loss_training_n2' : loss_training_n2, 'loss_training_n1' : loss_training_n1})
+            self.loss_test.update({'loss_test' : loss_test, 'loss_test_n2' : loss_test_n2, 'loss_test_n1' : loss_test_n1})
             #self.optim.update({'n1_optim' : n1_optim, 'n2_optim' : n2_optim, 'n_optim' : n_optim})
             self.optim.update({'n_optim' : n_optim})
-
-            self.resolver = resolver
-            self.interpolator = interpolator
 
         else : 
             variable_tag = 'rdn'
@@ -212,13 +207,13 @@ class Trainer:
         tf.summary.scalar('learning_rate', self.learning_rate_var) 
         for name, loss in self.loss.items():       
             tf.summary.scalar(name, loss)
-        for name, loss in self.test_loss.items():       
+        for name, loss in self.loss_test.items():       
             tf.summary.scalar(name, loss)
 
         self.summary_op = tf.summary.merge_all()
 
-        self.training_loss_writer = tf.summary.FileWriter(log_dir + 'training', sess.graph)
-        self.test_loss_writer = tf.summary.FileWriter(log_dir + 'test')
+        self.loss_training_writer = tf.summary.FileWriter(log_dir + 'training', sess.graph)
+        self.loss_test_writer = tf.summary.FileWriter(log_dir + 'test')
 
     def train(self, begin_epoch=0):
         
@@ -273,7 +268,7 @@ class Trainer:
             print(losses_val)
 
             n_iters_passed = epoch * (n_training_pairs // batch_size) + cursor / batch_size
-            self.training_loss_writer.add_summary(evaluated['batch_summary'], n_iters_passed)
+            self.loss_training_writer.add_summary(evaluated['batch_summary'], n_iters_passed)
 
             if (epoch !=0) and (epoch%ckpt_saving_interval == 0) and (cursor == n_training_pairs - 1):
                 self._save_intermediate_ckpt(epoch, sess)
@@ -287,7 +282,7 @@ class Trainer:
                             {self.plchdr_lr : test_lr_batch, self.plchdr_hr : test_hr_batch, self.plchdr_mr : test_mr_batch})
                         write3d(out_resolver, test_saving_dir+'mr_test_epoch{}_{}.tif'.format(epoch, idx))
                         write3d(out_interp, test_saving_dir+'hr_test_epoch{}_{}.tif'.format(epoch, idx))
-                self.test_loss_writer.add_summary(summary_t_loss, n_iters_passed)
+                self.loss_test_writer.add_summary(summary_t_loss, n_iters_passed)
           
             
 if __name__ == '__main__':
