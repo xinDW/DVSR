@@ -5,8 +5,8 @@ import tensorlayer as tl
 import numpy as np
 import imageio 
 
-from losses import mean_squared_error, edges_loss, l1_loss
 from model import res_dense_net, DBPN
+from model.losses import l2_loss, edges_loss, l1_loss
 from dataset import Dataset
 from utils import *
 from config import config
@@ -74,6 +74,7 @@ class Trainer:
             variable_tag_interp = 'Interp'
 
             if ('resolve_first' in self.archi):
+                var_tag_n2 = variable_tag_interp
                 self.plchdr_mr = tf.placeholder("float", [batch_size] + lr_size, name="MR")  
                 with tf.device('/gpu:%d' % device_id):
                     net_stage1 = DBPN(self.plchdr_lr, upscale=False, name=variable_tag_res)
@@ -87,6 +88,7 @@ class Trainer:
                 net_stage2_test = res_dense_net(net_stage1_test.outputs, conv_kernel=conv_kernel, bn=using_batch_norm, is_train=False, reuse=True, name=variable_tag_interp)
                
             else :
+                var_tag_n2 = variable_tag_res
                 self.plchdr_mr = tf.placeholder("float", [batch_size] + hr_size, name='MR')   
                 with tf.device('/gpu:0'):
                     net_stage1 = res_dense_net(self.plchdr_lr, factor=4, conv_kernel=conv_kernel, reuse=False, bn=using_batch_norm, is_train=True, name=variable_tag_interp)
@@ -103,12 +105,14 @@ class Trainer:
             net_stage2.print_params(details=False)
 
             #vars_n1 = tl.layers.get_variables_with_name(variable_tag_res, train_only=True, printable=False)
-            #vars_n2 = tl.layers.get_variables_with_name(variable_tag_interp, train_only=True, printable=False)
+            vars_n2 = tl.layers.get_variables_with_name(var_tag_n2, train_only=True, printable=False)
             
-            loss_training_n1 = mean_squared_error(self.plchdr_mr, net_stage1.outputs, is_mean=True)
-            loss_training_n2 = mean_squared_error(self.plchdr_hr, net_stage2.outputs, is_mean=True)
-            loss_test_n1 = mean_squared_error(self.plchdr_mr, net_stage1_test.outputs, is_mean=True)
-            loss_test_n2 = mean_squared_error(self.plchdr_hr, net_stage2_test.outputs, is_mean=True)
+            loss_training_n1 = l2_loss(self.plchdr_mr, net_stage1.outputs)
+            loss_training_n2 = l2_loss(self.plchdr_hr, net_stage2.outputs)
+            loss_edges = edges_loss(net_stage2.outputs, self.plchdr_hr)
+
+            loss_test_n1 = l2_loss(self.plchdr_mr, net_stage1_test.outputs)
+            loss_test_n2 = l2_loss(self.plchdr_hr, net_stage2_test.outputs)
 
             loss_training = loss_training_n1 + loss_training_n2
             loss_test = loss_test_n2 + loss_test_n1
@@ -118,8 +122,9 @@ class Trainer:
             #n1_optim = tf.train.AdamOptimizer(self.learning_rate_var, beta1=beta1).minimize(loss_training_n2)
             #n2_optim = tf.train.AdamOptimizer(self.learning_rate_var, beta1=beta1).minimize(loss_training_n1)
             n_optim = tf.train.AdamOptimizer(self.learning_rate_var, beta1=beta1).minimize(loss_training)
+            e_optim = tf.train.AdamOptimizer(self.learning_rate_var, beta1=beta1).minimize(loss_edges, var_list=vars_n2)
 
-            self.loss.update({'loss_training' : loss_training, 'loss_training_n2' : loss_training_n2, 'loss_training_n1' : loss_training_n1})
+            self.loss.update({'loss_training' : loss_training, 'loss_training_n2' : loss_training_n2, 'loss_training_n1' : loss_training_n1, 'edge_loss' : loss_edges})
             self.loss_test.update({'loss_test' : loss_test, 'loss_test_n2' : loss_test_n2, 'loss_test_n1' : loss_test_n1})
             #self.optim.update({'n1_optim' : n1_optim, 'n2_optim' : n2_optim, 'n_optim' : n_optim})
             self.optim.update({'n_optim' : n_optim})
@@ -132,13 +137,13 @@ class Trainer:
 
             net_vars = tl.layers.get_variables_with_name(variable_tag, train_only=True, printable=False)
 
-            l2_loss = mean_squared_error(self.plchdr_hr, net.outputs, is_mean=True)
+            ln_loss = l2_loss(self.plchdr_hr, net.outputs)
 
-            l2_optim = tf.train.AdamOptimizer(self.learning_rate_var, beta1=beta1).minimize(l2_loss, var_list=net_vars)
+            ln_optim = tf.train.AdamOptimizer(self.learning_rate_var, beta1=beta1).minimize(ln_loss, var_list=net_vars)
 
             
-            self.loss.update({'l2_loss' : l2_loss})
-            self.optim.update({'l2_optim' : l2_optim})
+            self.loss.update({'ln_loss' : ln_loss})
+            self.optim.update({'ln_optim' : ln_optim})
 
             
     def _find_available_ckpt(self, end, sess):
