@@ -12,6 +12,7 @@
 /main_read_partial.py
 /**/test*.py
 /train_dfe.py
+/train+.py
 /*.txt
 /config/
 /*.exe

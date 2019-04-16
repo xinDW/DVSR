@@ -14,7 +14,8 @@ __all__ = ['conv3d',
 ]
 
 w_init = tf.random_normal_initializer(stddev=0.02)
-b_init = tf.constant_initializer(value=0.0)
+#b_init = tf.constant_initializer(value=0.0)
+b_init=None
 g_init = tf.random_normal_initializer(1., 0.02)
 
 def conv3d_transpose(input, out_channels, filter_size, stride, act=None, padding='SAME', name='conv3d_transpose' ):
