@@ -227,6 +227,11 @@ class Trainer:
         self.loss_training_writer = tf.summary.FileWriter(log_dir + 'training', sess.graph)
         self.loss_test_writer = tf.summary.FileWriter(log_dir + 'test')
 
+    def _adjust_learning_rate(self, epoch, sess):
+        new_lr_decay = learning_rate_decay ** (epoch // decay_every)
+        sess.run(tf.assign(self.learning_rate_var, learning_rate_init * new_lr_decay))
+        print('\nlearning rate updated : %f\n' % (learning_rate_init * new_lr_decay))
+
     def train(self, begin_epoch=0):
         
         configProto = tf.ConfigProto(allow_soft_placement=True, log_device_placement=False)
@@ -268,11 +273,6 @@ class Trainer:
             HR_batch, LR_batch, MR_batch, cursor, epoch = training_dataset.iter()
 
             epoch += begin_epoch
-            # adjust learning rate:
-            if epoch != 0 and (epoch % decay_every == 0):
-                new_lr_decay = learning_rate_decay ** (epoch // decay_every)
-                sess.run(tf.assign(self.learning_rate_var, learning_rate_init * new_lr_decay))
-                print('\nlearning rate updated : %f\n' % (learning_rate_init * new_lr_decay))
 
             evaluated = sess.run(fetches, {self.plchdr_lr : LR_batch, self.plchdr_hr : HR_batch, self.plchdr_mr : MR_batch})
             print("Epoch:[%d/%d] iter:[%d/%d] times: %4.3fs" % (epoch, n_epoch, cursor + 1, n_training_pairs, time.time() - step_time))
@@ -281,6 +281,9 @@ class Trainer:
 
             n_iters_passed = epoch * (n_training_pairs // batch_size) + cursor / batch_size
             self.loss_training_writer.add_summary(evaluated['batch_summary'], n_iters_passed)
+
+            if (epoch != 0 and epoch % decay_every == 0 and cursor == n_training_pairs - 1 ):
+                self._adjust_learning_rate(epoch, sess)
 
             if (epoch !=0) and (epoch%ckpt_saving_interval == 0) and (cursor == n_training_pairs - 1):
                 self._save_intermediate_ckpt(epoch, sess)
