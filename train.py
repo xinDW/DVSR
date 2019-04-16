@@ -19,6 +19,7 @@ label = config.label
 device_id = config.TRAIN.device_id
 conv_kernel = config.TRAIN.conv_kernel
 using_batch_norm = config.TRAIN.using_batch_norm 
+using_edge_loss = config.TRAIN.using_edge_loss
 
 beta1 = config.TRAIN.beta1
 n_epoch = config.TRAIN.n_epoch
@@ -109,8 +110,7 @@ class Trainer:
             
             loss_training_n1 = l2_loss(self.plchdr_mr, net_stage1.outputs)
             loss_training_n2 = l2_loss(self.plchdr_hr, net_stage2.outputs)
-            loss_edges = edges_loss(net_stage2.outputs, self.plchdr_hr)
-
+            
             loss_test_n1 = l2_loss(self.plchdr_mr, net_stage1_test.outputs)
             loss_test_n2 = l2_loss(self.plchdr_hr, net_stage2_test.outputs)
 
@@ -122,12 +122,19 @@ class Trainer:
             #n1_optim = tf.train.AdamOptimizer(self.learning_rate_var, beta1=beta1).minimize(loss_training_n2)
             #n2_optim = tf.train.AdamOptimizer(self.learning_rate_var, beta1=beta1).minimize(loss_training_n1)
             n_optim = tf.train.AdamOptimizer(self.learning_rate_var, beta1=beta1).minimize(loss_training)
-            e_optim = tf.train.AdamOptimizer(self.learning_rate_var, beta1=beta1).minimize(loss_edges, var_list=vars_n2)
+            
 
-            self.loss.update({'loss_training' : loss_training, 'loss_training_n2' : loss_training_n2, 'loss_training_n1' : loss_training_n1, 'edge_loss' : loss_edges})
+            self.loss.update({'loss_training' : loss_training, 'loss_training_n2' : loss_training_n2, 'loss_training_n1' : loss_training_n1})
             self.loss_test.update({'loss_test' : loss_test, 'loss_test_n2' : loss_test_n2, 'loss_test_n1' : loss_test_n1})
             #self.optim.update({'n1_optim' : n1_optim, 'n2_optim' : n2_optim, 'n_optim' : n_optim})
             self.optim.update({'n_optim' : n_optim})
+
+            if using_edge_loss:
+                loss_edges = edges_loss(net_stage2.outputs, self.plchdr_hr)
+                e_optim = tf.train.AdamOptimizer(self.learning_rate_var, beta1=beta1).minimize(loss_edges, var_list=vars_n2)
+                self.loss.update({'edge_loss' : loss_edges})
+                self.optim.update({'e_optim' : e_optim})
+
 
         else : 
             variable_tag = 'rdn'
