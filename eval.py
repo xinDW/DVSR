@@ -8,7 +8,7 @@ from config import config
 from utils import read_all_images, write3d
 from model import DBPN, res_dense_net
 
-def evaluate(epoch, archi='2stage'):
+def evaluate(epoch, use_rdn=False):
 
     using_batch_norm = config.TRAIN.using_batch_norm 
 
@@ -21,10 +21,10 @@ def evaluate(epoch, archi='2stage'):
     
     start_time = time.time()
     valid_lr_imgs = read_all_images(valid_lr_img_path, lr_size[0])
-    if archi == '2stage':
-        archi = config.archi
-    else:
+    if use_rdn:
         archi = 'RDN'
+    else:
+        archi = config.archi
  
     device_id = config.TRAIN.device_id
     conv_kernel = config.TRAIN.conv_kernel
@@ -98,9 +98,9 @@ def evaluate(epoch, archi='2stage'):
         for idx in range(0,len(valid_lr_imgs)):
             
             SR = sess.run(net.outputs, {LR : valid_lr_imgs[idx:idx+1]})
-            #MR = sess.run(resolver.outputs, {LR : valid_lr_imgs[idx:idx+1]})
+            MR = sess.run(resolver.outputs, {LR : valid_lr_imgs[idx:idx+1]})
             write3d(SR, save_dir+'SR_%s_%06d_epoch%d.tif' % (label, idx, epoch))
-            #write3d(MR, save_dir+'MR_%s_%06d_epoch%d.tif' % (label, idx, epoch))
+            write3d(MR, save_dir+'MR_%s_%06d_epoch%d.tif' % (label, idx, epoch))
             print('writing %d / %d ...' % (idx + 1, len(valid_lr_imgs)))
 
     print("time elapsed : %4.4fs " % (time.time() - start_time))
@@ -109,11 +109,10 @@ if __name__ == '__main__':
     import argparse
     
     parser = argparse.ArgumentParser()
-    parser.add_argument('--ckpt', type=int, default=0)
-    parser.add_argument('--archi', default="2stage")
+    parser.add_argument("-c", "--ckpt", type=int, default=0)
+    parser.add_argument("-r", "--rdn", help="use one-stage(RDN) net for inference",
+                        action="store_true") #if the option is specified, assign True to args.rdn. Not specifying it implies False.
     args = parser.parse_args()
-    ckpt = args.ckpt
-    archi = args.archi
 
-    evaluate(ckpt, archi)
+    evaluate(args.ckpt, args.rdn)
     
