@@ -6,7 +6,7 @@ import numpy as np
 import imageio 
 
 from model import res_dense_net, DBPN
-from model.losses import l2_loss, edges_loss, l1_loss
+from model.losses import l2_loss, edges_loss, img_gradient_loss, l1_loss
 from dataset import Dataset
 from utils import *
 from config import config
@@ -20,6 +20,7 @@ device_id = config.TRAIN.device_id
 conv_kernel = config.TRAIN.conv_kernel
 using_batch_norm = config.TRAIN.using_batch_norm 
 using_edge_loss = config.TRAIN.using_edge_loss
+using_grad_loss = config.TRAIN.using_grad_loss
 
 beta1 = config.TRAIN.beta1
 n_epoch = config.TRAIN.n_epoch
@@ -135,6 +136,11 @@ class Trainer:
                 self.loss.update({'edge_loss' : loss_edges})
                 self.optim.update({'e_optim' : e_optim})
 
+            if using_grad_loss:
+                loss_grad = img_gradient_loss(net_stage2.outputs, self.plchdr_hr)
+                g_optim = tf.train.AdamOptimizer(self.learning_rate_var, beta1=beta1).minimize(loss_grad, var_list=vars_n2)
+                self.loss.update({'grad_loss' : loss_grad})
+                self.optim.update({'g_optim' : g_optim})
 
         else : 
             variable_tag = 'rdn'
@@ -152,6 +158,16 @@ class Trainer:
             self.loss.update({'ln_loss' : ln_loss})
             self.optim.update({'ln_optim' : ln_optim})
 
+            if using_edge_loss:
+                loss_edges = edges_loss(net.outputs, self.plchdr_hr)
+                e_optim = tf.train.AdamOptimizer(self.learning_rate_var, beta1=beta1).minimize(loss_edges, var_list=net_vars)
+                self.loss.update({'edge_loss' : loss_edges})
+                self.optim.update({'e_optim' : e_optim})
+            if using_grad_loss:
+                loss_grad = img_gradient_loss(net.outputs, self.plchdr_hr)
+                g_optim = tf.train.AdamOptimizer(self.learning_rate_var, beta1=beta1).minimize(loss_grad, var_list=net_vars)
+                self.loss.update({'grad_loss' : loss_grad})
+                self.optim.update({'g_optim' : g_optim})
             
     def _find_available_ckpt(self, end, sess):
         begin = end
@@ -232,7 +248,7 @@ class Trainer:
         sess.run(tf.assign(self.learning_rate_var, learning_rate_init * new_lr_decay))
         print('\nlearning rate updated : %f\n' % (learning_rate_init * new_lr_decay))
 
-    def train(self, begin_epoch=0):
+    def train(self, begin_epoch=0, print_loss=False):
         
         configProto = tf.ConfigProto(allow_soft_placement=True, log_device_placement=False)
         configProto.gpu_options.allow_growth = True
@@ -276,8 +292,10 @@ class Trainer:
 
             evaluated = sess.run(fetches, {self.plchdr_lr : LR_batch, self.plchdr_hr : HR_batch, self.plchdr_mr : MR_batch})
             print("Epoch:[%d/%d] iter:[%d/%d] times: %4.3fs" % (epoch, n_epoch, cursor + 1, n_training_pairs, time.time() - step_time))
-            losses_val = {name : value for name, value in evaluated.items() if 'loss' in name}
-            print(losses_val)
+            
+            if print_loss:
+                losses_val = {name : value for name, value in evaluated.items() if 'loss' in name}
+                print(losses_val)
 
             n_iters_passed = epoch * (n_training_pairs // batch_size) + cursor / batch_size
             self.loss_training_writer.add_summary(evaluated['batch_summary'], n_iters_passed)

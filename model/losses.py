@@ -85,7 +85,20 @@ def edges_loss(image, reference):
         #return tf.reduce_mean(tf.abs(edges_sr - edges_hr))
         return l2_loss(edges_sr, edges_hr)
         
-        
+def img_gradient_loss(image, reference):
+    '''
+    params: 
+        -image : tensor of shape [batch, depth, height, width, channels]
+        -reference : same shape as the image
+    '''
+    with tf.variable_scope('gradient_loss'):
+        img = tf.squeeze(tf.transpose(image, perm=[0,2,3,1,4]), axis=-1) 
+        ref = tf.squeeze(tf.transpose(reference, perm=[0,2,3,1,4]), axis=-1) 
+        grad_i = tf.image.image_gradients(img)
+        grad_r = tf.image.image_gradients(ref)
+        g_loss = tf.reduce_mean(tf.squared_difference(grad_i, grad_r))
+        return g_loss 
+           
 def mean_squared_error(target, output, is_mean=False, name="mean_squared_error"):
     """ Return the TensorFlow expression of mean-square-error (L2) of two batch of data.
 
