@@ -10,8 +10,8 @@ class Dataset:
         hr_size, 
         train_lr_path,
         train_hr_path,
-        test_lr_path,
-        test_hr_path,
+        test_lr_path=None,  # if None, the first 4 image pairs in the training set will be used as the test data
+        test_hr_path=None,
         mr_size=None,
         train_mr_path=None,
         test_mr_path=None,
@@ -38,9 +38,15 @@ class Dataset:
             self.hasValidation = True
 
         self.hasMR = False
-        if train_mr_path is None:
+        if train_mr_path is not None:
             self.hasMR = True
         
+        self.hasTest = False
+        if test_hr_path is not None:
+            self.hasTest = True
+
+        self.test_data_num = 0 if self.hasTest else 4
+
         self.prepared = False
 
     def _load_training_data(self):
@@ -81,19 +87,22 @@ class Dataset:
         self.training_data_lr = _read_images(self.train_lr_path, self.lr_size, self.dtype)
         self.training_data_hr = _read_images(self.train_hr_path, self.hr_size)
 
-        self.test_data_lr = _read_images(self.test_lr_path, self.lr_size, self.dtype)
-        self.test_data_hr = _read_images(self.test_hr_path, self.hr_size)
+        if self.hasTest:
+            self.test_data_lr = _read_images(self.test_lr_path, self.lr_size, self.dtype)
+            self.test_data_hr = _read_images(self.test_hr_path, self.hr_size)
 
         if self.hasMR:
             self.training_data_mr = _read_images(self.train_mr_path, self.mr_size)
-            self.test_data_mr = _read_images(self.test_mr_path, self.mr_size)
+            if self.hasTest:
+                self.test_data_mr = _read_images(self.test_mr_path, self.mr_size)
         
         if self.hasValidation:
             self.valid_data_lr = _read_images(self.valid_lr_path, self.lr_size, self.dtype)
            # self.plchdr_lr_valid = tf.placeholder(self.dtype, shape=self.valid_data_lr.shape, name='valid_lr')
 
         assert self.training_data_hr.shape[0] == self.training_data_lr.shape[0]
-        assert self.training_data_mr.shape[0] == self.training_data_lr.shape[0]
+        if self.hasMR:
+            assert self.training_data_mr.shape[0] == self.training_data_lr.shape[0]
 
         return self.training_data_hr.shape[0]
 
@@ -111,9 +120,11 @@ class Dataset:
         if (self.hasMR) and (not os.path.exists(self.train_mr_path)):
             raise Exception('mr training data path doesn\'t exist : %s' % self.train_mr_path)
         if self.hasValidation and (not os.path.exists(self.valid_lr_path)):
-            raise Exception('test data path doesn\'t exist : %s' % self.valid_lr_path)
+            raise Exception('validation data path doesn\'t exist : %s' % self.valid_lr_path)
         self.training_pair_num = self._load_training_data()
-        
+
+        if self.test_data_num >= self.training_pair_num:
+            self.test_data_num = self.training_pair_num // 2
             
         self.batch_size = batch_size
         self.n_epochs = n_epochs
@@ -126,7 +137,7 @@ class Dataset:
         if self.hasMR:
             print('MR dataset: %s\n' % str(self.training_data_mr.shape))
         
-        return self.training_pair_num
+        return self.training_pair_num - self.test_data_num
 
     ## in case that the term "test" and "valid" are confusing:
     #  -test : test data follows the same probability distribution as the training dataset, thus a part of training data is used as the test data.
@@ -134,10 +145,17 @@ class Dataset:
         
     def for_test(self):
         #return self.training_data_hr[0 : self.batch_size], self.training_data_lr[0 : self.batch_size], self.training_data_mr[0 : self.batch_size]
-        if self.hasMR:
-            return self.test_data_hr, self.test_data_lr, self.test_data_mr
+        if self.hasTest:
+            if self.hasMR:
+                return self.test_data_hr, self.test_data_lr, self.test_data_mr
+            else:
+                return self.test_data_hr, self.test_data_lr
         else:
-            return self.test_data_hr, self.test_data_lr
+            n = self.test_data_num
+            if self.hasMR:
+                return self.training_data_hr[0 : n], self.training_data_lr[0 : n], self.training_data_mr[0 : n]
+            else:
+                return self.training_data_hr[0 : n], self.training_data_lr[0 : n]
 
     def for_valid(self):
         if self.hasValidation:
@@ -152,9 +170,9 @@ class Dataset:
        
         
         if self.epoch < self.n_epochs:
-            if self.cursor + self.batch_size > self.training_pair_num:
+            if self.cursor + self.batch_size > self.training_pair_num - self.test_data_num:
                 self.epoch += 1
-                self.cursor = 0
+                self.cursor = self.test_data_num
 
             idx = self.cursor
             bth = self.batch_size
@@ -172,7 +190,10 @@ class Dataset:
                 return None, None, self.cursor, self.epoch
 
     def test_pair_nums(self):
-        return self.test_data_lr.shape[0]
+        if self.hasTest:
+            return self.test_data_lr.shape[0]
+        else:
+            return self.test_data_num
 
     '''
     def for_training(self, sess):
