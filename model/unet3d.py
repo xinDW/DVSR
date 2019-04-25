@@ -1,7 +1,7 @@
 import tensorflow as tf
 import tensorlayer as tl
 
-from .custom import conv3d, batch_norm, concat, LReluLayer, ReluLayer, SubVoxelConv
+from .custom import conv3d, batch_norm, concat, LReluLayer, ReluLayer, SubVoxelConv, max_pool3d
 
 __all__ = ['unet3d']
 
@@ -19,7 +19,7 @@ def upconv3d(layer, out_channels, factor=2, mode='subpixel', act=tf.identity, na
             n = tl.layers.DeConv3dLayer(layer, act=act, 
             shape=(1, 1, 1, out_channels, in_channels), 
             output_shape=(batch, depth*factor, height*factor, width*factor, out_channels), 
-            strides=(1, 2, 2, 2, 1), padding='SAME', W_init=tf.truncated_normal_initializer(stddev=0.02), b_init=tf.constant_initializer(value=0.0), name=mode)
+            strides=(1, factor, factor, factor, 1), padding='SAME', W_init=tf.truncated_normal_initializer(stddev=0.02), b_init=tf.constant_initializer(value=0.0), name=mode)
             
             return n
             
@@ -31,19 +31,19 @@ def unet3d(LR, ngf=64, reuse=False, is_train=False, name='unet3d'):
     Params:
         LR - [batch, depth, height, width, channels]
     '''
-    in_channels = LR.shape.as_list()[-1]
+    f_size = 3
+    act = tf.nn.leaky_relu
     layers = []
     with tf.variable_scope(name, reuse=reuse):
         n = tl.layers.InputLayer(LR, name='lr_input')
-        n = conv3d(n, ngf, 4, 1, name='conv0')
-        #n = upconv3d(n, out_channels=ngf, name='upsampling1')
+        n = conv3d(n, ngf, f_size, 1, act=act, name='conv0')
         layers.append(n)
         
         layer_specs = [
             ngf * 2, 
             ngf * 4,
             ngf * 8,
-            ngf * 8,
+            #ngf * 16,
             #ngf * 8,
             #ngf * 8, 
             #ngf * 8
@@ -51,21 +51,13 @@ def unet3d(LR, ngf=64, reuse=False, is_train=False, name='unet3d'):
         
         for out_channels in layer_specs:
             with tf.variable_scope('encoder_%d' % (len(layers) + 1)):
-                rect = LReluLayer(layers[-1], alpha=0.2)
-                in_channels = rect.outputs.shape.as_list()[-1]
-                conv = conv3d(rect, out_channels, 4, 2)
-                #out = batch_norm(conv, is_train=is_train)
-                layers.append(conv)
+                #rect = LReluLayer(layers[-1], alpha=0.2)
+                conv = conv3d(layers[-1], out_channels, f_size, 1, act=act)
+                pool = max_pool3d(conv, filter_size=f_size, stride=2, padding='SAME', name='maxpool')
+                layers.append(pool)
         
-        layer_specs = [
-            #ngf * 8, 
-            #ngf * 8, 
-            #ngf * 8,
-            ngf * 8, 
-            ngf * 4,
-            ngf * 2,
-            ngf
-        ]
+        layer_specs.reverse()
+        layer_specs = [l // 2 for l in layer_specs]
         
         encoder_layers_num = len(layers)
         for decoder_layer, out_channels in enumerate(layer_specs):
@@ -81,10 +73,10 @@ def unet3d(LR, ngf=64, reuse=False, is_train=False, name='unet3d'):
                 layers.append(out)
         
         with tf.variable_scope('out'):
-            input = concat([layers[-1], layers[0]])
-            rect = ReluLayer(input)
-            output = upconv3d(rect, out_channels=8, name='upsampling1')
-            output = upconv3d(output, out_channels=1, act=tf.tanh, name='upsampling2')
+            n = concat([layers[-1], layers[0]])
+            output = conv3d(n, 1, f_size, 1, act=tf.nn.tanh, name='conv')
+            #output = upconv3d(rect, out_channels=8, name='upsampling1')
+            #output = upconv3d(output, out_channels=1, act=tf.tanh, name='upsampling2')
             #rect.outputs = tf.tanh(rect.outputs)
             return output
         

@@ -1,12 +1,13 @@
 import tensorflow as tf
 import tensorlayer as tl
 import numpy as np
-from tensorlayer.layers import Layer, Conv3dLayer, DeConv3dLayer, ConcatLayer, BatchNormLayer
+from tensorlayer.layers import Layer, Conv3dLayer, DeConv3dLayer, ConcatLayer, BatchNormLayer, MaxPool3d
 
 __all__ = ['conv3d',
     'conv3d_transpose',
     'concat',
     'batch_norm',
+    'max_pool3d',
     'prelu',
     'SubVoxelConv',
     'LReluLayer',
@@ -55,6 +56,11 @@ def concat(layer, concat_dim=-1, name='concat'):
 def batch_norm(layer, act=tf.identity, is_train=True, gamma_init=g_init, name='bn'):  
     return BatchNormLayer(layer, act=act, is_train=is_train, gamma_init=gamma_init, name=name)
 
+def max_pool3d(x, filter_size=3, stride=2, padding='SAME', name='maxpool3d'):
+    filter_size=[filter_size,filter_size,filter_size]
+    strides=[stride,stride,stride]
+    return MaxPool3d(x, filter_size=filter_size, strides=strides, padding=padding, name=name)
+    
 def prelu(x, name='prelu'):
     w_shape = x.get_shape()[-1]
     with tf.variable_scope(name):
