@@ -7,14 +7,14 @@ from utils import get_tiff_fn
 class Dataset:
     def __init__(self, 
         lr_size, 
-        hr_size,
-        mr_size,
+        hr_size, 
         train_lr_path,
         train_hr_path,
-        train_mr_path,
         test_lr_path,
         test_hr_path,
-        test_mr_path,
+        mr_size=None,
+        train_mr_path=None,
+        test_mr_path=None,
         valid_lr_path=None,
         dtype=np.float32):  
         
@@ -28,16 +28,19 @@ class Dataset:
         self.test_lr_path = test_lr_path
         self.test_hr_path = test_hr_path
         self.test_mr_path = test_mr_path
+        self.valid_lr_path = valid_lr_path
 
         self.dtype = dtype
 
         ## if LR measurement is designated for validation during the trianing
+        self.hasValidation = False
         if valid_lr_path is not None:
-            self.valid_lr_path = valid_lr_path
             self.hasValidation = True
-        else:
-            self.hasValidation = False
 
+        self.hasMR = False
+        if train_mr_path is None:
+            self.hasMR = True
+        
         self.prepared = False
 
     def _load_training_data(self):
@@ -45,11 +48,11 @@ class Dataset:
             
             """
             Params:
-                
+                -img_size : [depth height width channels]   
             return images in shape [n_images, depth, height, width, channels]
             """
             
-            z_range = img_size[0] # the desired depth of the image
+            depth, height, width, _ = img_size # the desired image size
             images_set = []
             img_list = sorted(tl.files.load_file_list(path=path, regx='.*.tif', printable=False))
             
@@ -59,10 +62,13 @@ class Dataset:
                     img = img.astype(dtype, casting='unsafe')
                 print('%s : %s' % ((path + img_file), str(img.shape)))  
 
-                depth = img.shape[0] # the actual depth of the image
-                for d in range(0, depth, z_range):
-                    if d + z_range <= depth:
-                        images_set.append(img[d:(d+z_range), ...])
+                d_real, h_real, w_real, _ = img.shape # the actual size of the image
+                for d in range(0, d_real, depth):
+                    if d + depth <= d_real:
+                        for h in range(0, h_real, height):
+                            for w in range(0, w_real, width):
+                                if h + height <= h_real and w + width <= w_real :
+                                    images_set.append(img[d:(d+depth), h:(h+height), w:(w+width), :])
             
             if (len(images_set) == 0):
                 raise Exception("none of the images have been loaded, please check the config img_size and its real dimension")
@@ -73,12 +79,14 @@ class Dataset:
             return images_set
 
         self.training_data_lr = _read_images(self.train_lr_path, self.lr_size, self.dtype)
-        self.training_data_mr = _read_images(self.train_mr_path, self.mr_size)
         self.training_data_hr = _read_images(self.train_hr_path, self.hr_size)
 
         self.test_data_lr = _read_images(self.test_lr_path, self.lr_size, self.dtype)
         self.test_data_hr = _read_images(self.test_hr_path, self.hr_size)
-        self.test_data_mr = _read_images(self.test_mr_path, self.mr_size)
+
+        if self.hasMR:
+            self.training_data_mr = _read_images(self.train_mr_path, self.mr_size)
+            self.test_data_mr = _read_images(self.test_mr_path, self.mr_size)
         
         if self.hasValidation:
             self.valid_data_lr = _read_images(self.valid_lr_path, self.lr_size, self.dtype)
@@ -100,11 +108,10 @@ class Dataset:
             raise Exception('lr training data path doesn\'t exist : %s' % self.train_lr_path)
         if not os.path.exists(self.train_hr_path):
             raise Exception('hr training data path doesn\'t exist : %s' % self.train_hr_path)
-        if not os.path.exists(self.train_mr_path):
+        if (self.hasMR) and (not os.path.exists(self.train_mr_path)):
             raise Exception('mr training data path doesn\'t exist : %s' % self.train_mr_path)
-        if self.hasValidation:
-            if not os.path.exists(self.valid_lr_path):
-                raise Exception('test data path doesn\'t exist : %s' % self.valid_lr_path)
+        if self.hasValidation and (not os.path.exists(self.valid_lr_path)):
+            raise Exception('test data path doesn\'t exist : %s' % self.valid_lr_path)
         self.training_pair_num = self._load_training_data()
         
             
@@ -115,8 +122,10 @@ class Dataset:
         self.epoch = 1
         self.prepared = True
         
-        print('HR dataset : %s\nLR dataset: %s\nMR dataset: %s\n' % (str(self.training_data_hr.shape), str(self.training_data_lr.shape), str(self.training_data_mr.shape)))
-
+        print('HR dataset : %s\nLR dataset: %s\n' % (str(self.training_data_hr.shape), str(self.training_data_lr.shape)))
+        if self.hasMR:
+            print('MR dataset: %s\n' % str(self.training_data_mr.shape))
+        
         return self.training_pair_num
 
     ## in case that the term "test" and "valid" are confusing:
@@ -125,7 +134,10 @@ class Dataset:
         
     def for_test(self):
         #return self.training_data_hr[0 : self.batch_size], self.training_data_lr[0 : self.batch_size], self.training_data_mr[0 : self.batch_size]
-        return self.test_data_hr, self.test_data_lr, self.test_data_mr
+        if self.hasMR:
+            return self.test_data_hr, self.test_data_lr, self.test_data_mr
+        else:
+            return self.test_data_hr, self.test_data_lr
 
     def for_valid(self):
         if self.hasValidation:
@@ -149,10 +161,15 @@ class Dataset:
 
             self.cursor += bth
 
-            return self.training_data_hr[idx : idx + bth], self.training_data_lr[idx : idx + bth], self.training_data_mr[idx : idx + bth], idx, self.epoch
-                
+            if self.hasMR:
+                return self.training_data_hr[idx : idx + bth], self.training_data_lr[idx : idx + bth], self.training_data_mr[idx : idx + bth], idx, self.epoch
+            else :
+                return self.training_data_hr[idx : idx + bth], self.training_data_lr[idx : idx + bth], idx, self.epoch
         else:
-            return None, None, None, self.cursor, self.epoch
+            if self.hasMR:
+                return None, None, None, self.cursor, self.epoch
+            else :
+                return None, None, self.cursor, self.epoch
 
     def test_pair_nums(self):
         return self.test_data_lr.shape[0]
