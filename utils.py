@@ -2,7 +2,16 @@ import imageio
 import tensorflow as tf
 import tensorlayer as tl
 import numpy as np
-import SimpleITK as sitk
+import math
+
+
+__all__ = ['read_all_images',
+    'load_and_assign_ckpt',
+    'reformat',
+    'get_tiff_fn',
+    'rearrange3d_fn',
+    'write3d'
+    ]
 
 def read_all_images(path, z_range, format_out=True, factor=None):
     """
@@ -51,9 +60,9 @@ def load_and_assign_ckpt(sess, ckpt_file, net):
 def reformat(output):
     """
     Params : 
-        output : [batch, depth, height, width, channels=1]
+        output : tf.Tensor, [batch, depth, height, width, channels=1]
     """ 
-    batch, depth, height, width, channels = output.get_shape().as_list();
+    _, _, _, width, channels = output.get_shape().as_list()
     assert channels == 1
     center = width // 2
     sample = output[:,:,:,(center - 1) : (center + 2), :]
@@ -61,17 +70,22 @@ def reformat(output):
     resized_out = (resized_out + 1) / 2  # transform pixel value to [0, 1]
     
     return resized_out
-    
-def get_img_fn(file, path):    
-    return imageio.imread(path + file)
 
 def get_tiff_fn(file, path):
     """
     return volume in shape of [depth, height, width, channels=1]
     """
     image = imageio.volread(path + file) # [depth, height, width]
+    max_val = 255.
+    if image.dtype == np.uint8:
+        pass
+    elif image.dtype == np.uint16:
+        max_val = 65535.
+    else:
+        raise Exception('\nunsupported image bitdepth %s\n' % str(image.dtype))
+    
+    image = normalize_fn(image, max_val)
     image = image[..., np.newaxis]       # [depth, height, width, channels=1]
-    image = normalize_fn(image)
     return image
 
 def generate_mr_fn(image, mode='ds', **kwargs) :
@@ -82,28 +96,24 @@ def generate_mr_fn(image, mode='ds', **kwargs) :
                'blur' -- blur only
     """ 
     assert mode in ['ds', 'blur']
-    depth, height, width, channels = image.shape.as_list()
+    depth, height, width, channels = image.shape
     if mode == 'ds':
         factor = kwargs['factor']
         tmp = np.zeros([depth//factor, height//factor, width//factor, channels])
         for i in range(0, depth, factor):
             d = i // factor
             tmp[d, :, :, :] = tmp[d, :, :, :] + image[i, ::factor, ::factor, :]
-        end
         tmp = tmp / factor
     else :
         tmp = image
     return tmp
-    
-def crop_img_fn(img, size, is_random=False):
-    #img = crop(img, wrg=size[0], hrg=size[1], is_random=is_random)
-    img = np.reshape(img, size)
-    img = normalize_fn(img)
-    return img
 
-def normalize_fn(x):
-    x = x / (255.0/2) - 1
+def normalize_fn(x, max_val=255.):
+    #max_val = 255. if bitdepth == 8 else 65535.
+    x = x / (max_val/2) - 1
     return x
+
+
 
 def rearrange3d_fn(image):
     """
@@ -173,10 +183,10 @@ def transform(image3d, factor=[4,4,4], inverse=False):
                 ret = np.concatenate((ret, tmp), axis=0)
     return ret
 
-def _write3d(x, path, scale_pixel_value=True):
+def _write3d(x, filename, scale_pixel_value=True):
     """
     Params:
-        -x : [depth, height, width, channels]
+        -x : [depth, height, width]
         -max_val : possible maximum pixel value (65535 for 16-bit or 255 for 8-bit)
     """
     if scale_pixel_value:
@@ -184,9 +194,9 @@ def _write3d(x, path, scale_pixel_value=True):
         x = x * 65535. / 2.
 
     x = x.astype(np.uint16)
-    stack = sitk.GetImageFromArray(x)
-    #stack = sitk.Cast(stack, sitk.sitkUInt16)
-    sitk.WriteImage(stack, path)
+    imageio.volwrite(filename, x)
+    #stack = sitk.GetImageFromArray(x)
+    #sitk.WriteImage(stack, filename)
         
 def write3d(x, path, scale_pixel_value=True):
     """
@@ -195,35 +205,117 @@ def write3d(x, path, scale_pixel_value=True):
         -scale_pixel_value : scale pixels value to [0, 65535] is True
     """
     
-    fragments = path.split('.')
-    new_path = ''
-    for i in range(len(fragments) - 1):
-        new_path = new_path + fragments[i]
+    
     
     #print(x.shape)
+    new_path = ''
+    fragments = path.split('.')
+    for i in range(len(fragments) - 1):
+        new_path = new_path + fragments[i]
+
     dims = len(x.shape)
+    batch = x.shape[0]
+    n_channels = x.shape[-1]
     
     if dims == 4:
-        batch, height, width, n_channels = x.shape
-        x_re = np.zeros([batch, n_channels, height, width, 1])
-        for d in range(n_channels):
-            slice = x[:,:,:,d]
-            x_re[:,d,:,:,:] = slice[:,:,:,np.newaxis]
+        x_re = np.transpose(x, axes=[0, 1, 2, 3])
+        for b in range(batch):
+            x_re_b = x_re[b, ...]
+            _write3d(x_re_b, new_path + '_{}.{}'.format(b, fragments[-1]) , scale_pixel_value)  
             
     elif dims == 5:
         x_re = x
+        for b in range(batch):
+            x_re_b = x_re[b, ...]
+            for c in range(n_channels):
+                x_re_c = x_re_b[..., c]
+                _write3d(x_re_c, new_path + '_b{}_c{}.{}'.format(b, c, fragments[-1]) , scale_pixel_value)      
+                #print(image.shape)
     else:
         raise Exception('unsupported dims : %s' % str(x.shape))
     
-    '''
-    if bitdepth == 16:
-        max_val = 65535.
-    elif bitdepth == 8:
-        max_val = 255.
-    else :
-        raise Exception('unsupported bitdepth : %d' % bitdepth)
-    '''
-    for index, image in enumerate(x_re):
-        #print(image.shape)
-        _write3d(image, new_path + '_' + str(index) + '.' + fragments[-1], scale_pixel_value)       
+
     
+    
+    
+    
+
+'''
+    def makeGaussianKernel1D(sigma):
+    """
+    params:
+        -sigma : standard deviation of the 1-D Gaussian function, measured in `pixels`
+    """
+    kernel_radius = (int) (2 * sigma + 1)
+    kernel = np.zeros(kernel_radius * 2 - 1)
+    k_sum = 0.
+    for i in range(0, kernel_radius * 2 - 1):
+        x = i - kernel_radius
+        kernel[i] = math.exp(-0.5 * x * x / sigma / sigma)
+        k_sum += kernel[i]
+    kernel = kernel / k_sum # normalization
+    return kernel
+
+def conv1d(line, kernel):
+    """1-D convolution
+    Params:
+        -line : 1-D array, a row or colume from a image
+        -kernel: 1-D normalized kernel
+    return:
+        convolved line
+    """
+
+    k_radius = kernel.size // 2
+    conv = np.zeros(line.size)
+    for i in range(0, line.size):
+        tmp = 0.
+        for j in range(-k_radius, k_radius + 1):
+            idx = i + j
+            if (idx >= 0 and idx < line.size):
+                tmp += line[idx] * kernel[j + k_radius]
+        conv[i] = tmp
+    return conv
+
+def gaussianBlur2D(image, kernel):
+    """
+    Perform a 2-D Gaussian blur by x-conv and y-conv seperately. The image channels remain unchanged.
+    Params:
+        -image: [height, width, channels=1]
+        -kernel: 1-D Gaussian kernel
+    """
+    height, width, channels = image.shape
+    blurred = np.zeros([height, width, channels])
+    for c in range(0, channels):
+        image_c = image[:,:, c]
+        image_bc = np.zeros([height, width])
+        for h in range(0, height):
+            image_bc[h, :] = conv1d(image_c[h, :], kernel)
+        for w in range(0, width):
+            image_bc[:, w] = conv1d(image_bc[:, w], kernel)
+    
+        blurred[:,:,c] = image_bc
+    
+    return blurred
+
+def gaussianBlur3D(image, sigma_xy, sigma_z):
+    """ 
+    Params:
+        -image: [depth, height, width, channels] 
+        -sigma: standard deviations of the 3D Gussian function, measured in pixels
+    return: the blurred image
+    """
+
+    depth, height, width, channels = image.shape
+    blurred = np.zeros([depth, height, width, channels])
+    kernel_xy = makeGaussianKernel1D(sigma_xy)
+    kernel_z = makeGaussianKernel1D(sigma_z)
+    ## blur xy
+    for d in range(0, depth):
+        blurred[d, ...] = gaussianBlur2D(image[d, ...], kernel_xy)    
+    ## blur z 
+    for h in range(0, height):
+        for w in range(0, width):
+            for c in range(0, channels):
+                blurred[:, h, w, c] = conv1d(blurred[:, h, w, c], kernel_z)
+    return blurred
+'''
