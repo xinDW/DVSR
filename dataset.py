@@ -2,7 +2,7 @@ import tensorflow as tf
 import tensorlayer as tl
 import numpy as np
 import os
-from utils import get_tiff_fn
+from utils import get_tiff_fn, interpolate3d
 
 class Dataset:
     def __init__(self, 
@@ -50,11 +50,14 @@ class Dataset:
         self.prepared = False
 
     def _load_training_data(self):
-        def _read_images(path, img_size, dtype=np.float32):
+        def _read_images(path, img_size, dtype=np.float32, transform=None, **kwargs):
             
             """
             Params:
-                -img_size : [depth height width channels]   
+                -img_size : [depth height width channels]  
+                -transform : transformation function applied to the loaded image
+                -kwargs : key-word args for transform fn
+
             return images in shape [n_images, depth, height, width, channels]
             """
             
@@ -67,7 +70,10 @@ class Dataset:
                 if (img.dtype != dtype):
                     img = img.astype(dtype, casting='unsafe')
                 print('%s : %s' % ((path + img_file), str(img.shape)))  
-
+                
+                if transform is not None:
+                    img = transform(img, **kwargs)
+                    print(img.shape)
                 d_real, h_real, w_real, _ = img.shape # the actual size of the image
                 for d in range(0, d_real, depth):
                     if d + depth <= d_real:
@@ -77,14 +83,15 @@ class Dataset:
                                     images_set.append(img[d:(d+depth), h:(h+height), w:(w+width), :])
             
             if (len(images_set) == 0):
-                raise Exception("none of the images have been loaded, please check the config img_size and its real dimension")
+                raise Exception("none of the images have been loaded, please check the image size ({} desired)".format(str(img_size)))
             
             print('read %d from %s' % (len(images_set), path)) 
             images_set = np.asarray(images_set)
         
             return images_set
 
-        self.training_data_lr = _read_images(self.train_lr_path, self.lr_size, self.dtype)
+        #self.training_data_lr = _read_images(self.train_lr_path, self.hr_size, self.dtype, transform=interpolate3d)
+        self.training_data_lr = _read_images(self.train_lr_path, self.lr_size)
         self.training_data_hr = _read_images(self.train_hr_path, self.hr_size)
 
         if self.hasTest:
@@ -129,11 +136,11 @@ class Dataset:
         self.batch_size = batch_size
         self.n_epochs = n_epochs
 
-        self.cursor = batch_size
+        self.cursor = self.test_data_num
         self.epoch = 1
         self.prepared = True
         
-        print('HR dataset : %s\nLR dataset: %s\n' % (str(self.training_data_hr.shape), str(self.training_data_lr.shape)))
+        print('HR dataset: %s\nLR dataset: %s\n' % (str(self.training_data_hr.shape), str(self.training_data_lr.shape)))
         if self.hasMR:
             print('MR dataset: %s\n' % str(self.training_data_mr.shape))
         
@@ -149,13 +156,13 @@ class Dataset:
             if self.hasMR:
                 return self.test_data_hr, self.test_data_lr, self.test_data_mr
             else:
-                return self.test_data_hr, self.test_data_lr
+                return self.test_data_hr, self.test_data_lr, None
         else:
             n = self.test_data_num
             if self.hasMR:
                 return self.training_data_hr[0 : n], self.training_data_lr[0 : n], self.training_data_mr[0 : n]
             else:
-                return self.training_data_hr[0 : n], self.training_data_lr[0 : n]
+                return self.training_data_hr[0 : n], self.training_data_lr[0 : n], None
 
     def for_valid(self):
         if self.hasValidation:
@@ -168,32 +175,34 @@ class Dataset:
              
     def iter(self):
        
-        
+        n_t = self.test_data_num
         if self.epoch < self.n_epochs:
-            if self.cursor + self.batch_size > self.training_pair_num - self.test_data_num:
+            if self.cursor + self.batch_size > self.training_pair_num:
                 self.epoch += 1
-                self.cursor = self.test_data_num
+                self.cursor = n_t
 
             idx = self.cursor
             bth = self.batch_size
 
             self.cursor += bth
+            idx_disp = idx - n_t # begin with 0
+            if self.hasMR:
+                return self.training_data_hr[idx : idx + bth], self.training_data_lr[idx : idx + bth], self.training_data_mr[idx : idx + bth], idx_disp, self.epoch
+            else :
+                return self.training_data_hr[idx : idx + bth], self.training_data_lr[idx : idx + bth], None, idx_disp, self.epoch
 
-            if self.hasMR:
-                return self.training_data_hr[idx : idx + bth], self.training_data_lr[idx : idx + bth], self.training_data_mr[idx : idx + bth], idx, self.epoch
-            else :
-                return self.training_data_hr[idx : idx + bth], self.training_data_lr[idx : idx + bth], idx, self.epoch
-        else:
-            if self.hasMR:
-                return None, None, None, self.cursor, self.epoch
-            else :
-                return None, None, self.cursor, self.epoch
+        raise Exception('epoch idx out of bounds : %d / %d' %(self.epoch, self.n_epochs))
 
     def test_pair_nums(self):
         if self.hasTest:
             return self.test_data_lr.shape[0]
         else:
             return self.test_data_num
+
+    def reset(self, n_epochs):
+        self.n_epochs = n_epochs
+        self.cursor = self.test_data_num
+        self.epoch = 1
 
     '''
     def for_training(self, sess):
