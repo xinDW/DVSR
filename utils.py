@@ -3,6 +3,7 @@ import tensorflow as tf
 import tensorlayer as tl
 import numpy as np
 import math
+import scipy.io
 
 
 __all__ = ['read_all_images',
@@ -10,7 +11,8 @@ __all__ = ['read_all_images',
     'reformat',
     'get_tiff_fn',
     'rearrange3d_fn',
-    'write3d'
+    'write3d',
+    'interpolate3d',
     ]
 
 def read_all_images(path, z_range, format_out=True, factor=None):
@@ -190,7 +192,8 @@ def _write3d(x, filename, scale_pixel_value=True):
         -max_val : possible maximum pixel value (65535 for 16-bit or 255 for 8-bit)
     """
     if scale_pixel_value:
-        x = x + 1.  #[0, 2]
+        x = x - np.min(x)
+        #x = x + 1.  #[0, 2]
         x = x * 65535. / 2.
 
     x = x.astype(np.uint16)
@@ -198,11 +201,12 @@ def _write3d(x, filename, scale_pixel_value=True):
     #stack = sitk.GetImageFromArray(x)
     #sitk.WriteImage(stack, filename)
         
-def write3d(x, path, scale_pixel_value=True):
+def write3d(x, path, scale_pixel_value=True, savemat=False):
     """
     Params:
         -x : [batch, depth, height, width, channels] or [batch, height, width, channels>3]
         -scale_pixel_value : scale pixels value to [0, 65535] is True
+        -savemat : if to save x as an extra .mat file.
     """
     
     
@@ -212,6 +216,9 @@ def write3d(x, path, scale_pixel_value=True):
     fragments = path.split('.')
     for i in range(len(fragments) - 1):
         new_path = new_path + fragments[i]
+
+    if savemat:
+        save_mat(x, new_path)
 
     dims = len(x.shape)
     batch = x.shape[0]
@@ -233,12 +240,27 @@ def write3d(x, path, scale_pixel_value=True):
                 #print(image.shape)
     else:
         raise Exception('unsupported dims : %s' % str(x.shape))
-    
 
-    
-    
-    
-    
+def save_mat(im, filename):
+    """save the image as .mat file.
+    """
+    scipy.io.savemat(filename, mdict={'data' : im})
+
+def interpolate3d(img, factor=4, order=1):
+    """
+    Params:
+        -img : [batch, depth, height, width, channels] or [depth, height, width, channels]
+    """
+    from scipy.ndimage.interpolation import zoom
+    if len(img.shape) == 5:
+        zoom_factor = [1,factor,factor,factor,1]
+    elif len(img.shape) == 4:
+        zoom_factor = [factor,factor,factor,1]
+    else:
+        raise Exception("interpolate3d : unsupported image dims : %d" % len(img.shape))
+
+    return zoom(img, zoom=zoom_factor, order=order)
+
 
 '''
     def makeGaussianKernel1D(sigma):
