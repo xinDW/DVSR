@@ -12,10 +12,16 @@ class Predictor:
         return normalize_percentile(im, low=low, high=high)
 
     def __reverse_norm(self, im):
-        max_val = 65535. if self.dtype == np.uint16 else 255
+        # max_val = 65535. if self.dtype == np.uint16 else 255
+        # eps = 1e-10
+        # im  = (im - np.min(im)) / (np.max(im) - np.min(im) + eps) * max_val
+        # return im.astype(self.dtype)
+
+        max_val = 65535.
         eps = 1e-10
         im  = (im - np.min(im)) / (np.max(im) - np.min(im) + eps) * max_val
-        return im.astype(self.dtype)
+        return im.astype(np.uint16)
+
 
     def __predict_block(self, block):  
         return self.model.predict(block)
