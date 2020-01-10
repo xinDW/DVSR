@@ -5,7 +5,7 @@ from .custom import conv3d, batch_norm, concat, LReluLayer, ReluLayer, SubVoxelC
 
 __all__ = ['unet3d']
 
-def upconv3d(layer, out_channels, factor=2, mode='subpixel', act=tf.identity, name='upconv'):  
+def upconv3d(layer, out_channels, factor=2, mode='subpixel', output_shape=None, act=tf.identity, name='upconv'):  
     with tf.variable_scope(name):
         if mode == 'subpixel':
             in_channels = layer.outputs.shape.as_list()[-1]
@@ -16,9 +16,15 @@ def upconv3d(layer, out_channels, factor=2, mode='subpixel', act=tf.identity, na
         elif mode == 'deconv':
             batch, depth, height, width, in_channels = layer.outputs.shape.as_list()
             
+            if output_shape is None:
+                output_shape = (batch, depth*factor, height*factor, width*factor, out_channels)
+            else:
+                if len(output_shape) == 3:
+                    output_shape = [batch] + output_shape + [out_channels]
+
             n = tl.layers.DeConv3dLayer(layer, act=act, 
             shape=(1, 1, 1, out_channels, in_channels), 
-            output_shape=(batch, depth*factor, height*factor, width*factor, out_channels), 
+            output_shape=output_shape, 
             strides=(1, factor, factor, factor, 1), padding='SAME', W_init=tf.truncated_normal_initializer(stddev=0.02), b_init=tf.constant_initializer(value=0.0), name=mode)
             
             return n
@@ -26,7 +32,8 @@ def upconv3d(layer, out_channels, factor=2, mode='subpixel', act=tf.identity, na
         else:
             raise Exception('unknown mode : %s' % mode)
         
-def unet3d(LR, ngf=64, reuse=False, is_train=False, name='unet3d'):
+def unet3d(LR, ngf=64, upscale=False, reuse=False, is_train=False, name='unet3d'):
+    
     '''
     Params:
         LR - [batch, depth, height, width, channels]
@@ -55,6 +62,7 @@ def unet3d(LR, ngf=64, reuse=False, is_train=False, name='unet3d'):
                 conv = conv3d(layers[-1], out_channels, f_size, 1, act=act)
                 pool = max_pool3d(conv, filter_size=f_size, stride=2, padding='SAME', name='maxpool')
                 layers.append(pool)
+                print(pool.outputs.shape)
         
         layer_specs.reverse()
         layer_specs = [l // 2 for l in layer_specs]
@@ -62,21 +70,26 @@ def unet3d(LR, ngf=64, reuse=False, is_train=False, name='unet3d'):
         encoder_layers_num = len(layers)
         for decoder_layer, out_channels in enumerate(layer_specs):
             skip_layer = encoder_layers_num - decoder_layer - 1
+            _, d, h, w, _ = layers[skip_layer - 1].outputs.shape.as_list()
+            print([d, h, w])
             with tf.variable_scope('decoder_%d' % (skip_layer + 1)):
                 if decoder_layer == 0:
                     input = layers[-1]
                 else:
                     input = concat([layers[-1], layers[skip_layer]])
                 rect = ReluLayer(input)
-                out = upconv3d(input, out_channels, mode='deconv')
+                out = upconv3d(rect, out_channels, mode='deconv', output_shape=[d, h, w])
                 #out = batch_norm(out, is_train=is_train)
                 layers.append(out)
         
         with tf.variable_scope('out'):
             n = concat([layers[-1], layers[0]])
-            output = conv3d(n, 1, f_size, 1, act=tf.nn.tanh, name='conv')
-            #output = upconv3d(rect, out_channels=8, name='upsampling1')
-            #output = upconv3d(output, out_channels=1, act=tf.tanh, name='upsampling2')
-            #rect.outputs = tf.tanh(rect.outputs)
+
+            if upscale is False:
+                output = conv3d(n, 1, f_size, 1, act=tf.nn.tanh, name='conv')
+            else:
+                output = upconv3d(n, out_channels=8, name='upsampling1')
+                output = upconv3d(output, out_channels=1, act=tf.tanh, name='upsampling2')
+            
             return output
         

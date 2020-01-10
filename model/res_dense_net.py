@@ -1,10 +1,10 @@
 import tensorflow as tf
 import tensorlayer as tl
 
-from .custom import conv3d, conv3d_transpose, batch_norm, concat, SubVoxelConv
-from tensorlayer.layers import InputLayer, ElementwiseLayer
+from .custom import conv3d, conv3d_transpose, batch_norm, concat, upscale
+from tensorlayer.layers import Layer, InputLayer, ElementwiseLayer
 
-__all__ = ['res_dense_net']
+__all__ = ['res_dense_net', 'RDN_end']
    
 def res_dense_block(preceding, G=64, conv_kernel=3, bn=False, is_train=True, name='rdb'):
     """
@@ -15,7 +15,7 @@ def res_dense_block(preceding, G=64, conv_kernel=3, bn=False, is_train=True, nam
     """
     G0 = preceding.outputs.shape[-1]
     if G0 != G:
-        raise Exception('G0 and G must be equal in RDB')
+        raise Exception('G0(%d) and G(%d) must be equal in RDB' % (G0, G))
     
     act = tf.nn.relu
     with tf.variable_scope(name):
@@ -38,8 +38,7 @@ def res_dense_block(preceding, G=64, conv_kernel=3, bn=False, is_train=True, nam
         
         return out
 
-def upscale(layer, scale=2, name='upscale'):
-    return SubVoxelConv(layer, scale=scale, n_out_channel=None, act=tf.identity, name=name)
+
 
 def res_dense_net(lr, factor=4, conv_kernel=3, bn=False, is_train=True, format_out=True, reuse=False, name='RDN'):
     '''Residual Dense net
@@ -54,7 +53,9 @@ def res_dense_net(lr, factor=4, conv_kernel=3, bn=False, is_train=True, format_o
 
     G0 = 64
     with tf.variable_scope(name, reuse=reuse):
-      n = InputLayer(lr, 'lr')
+
+
+      n = InputLayer(lr, 'lr') if not isinstance(lr, Layer) else lr
       
       # shallow feature extraction layers
       n1 = conv3d(n, out_channels=G0, filter_size=conv_kernel, name='shallow1')
@@ -62,9 +63,9 @@ def res_dense_net(lr, factor=4, conv_kernel=3, bn=False, is_train=True, format_o
       n2 = conv3d(n1, out_channels=G0, filter_size=conv_kernel, name='shallow2')
       if bn: n2 = batch_norm(n2, is_train=is_train, name='bn2') 
       
-      n3 = res_dense_block(n2, bn=bn, name='rdb1')
-      n4 = res_dense_block(n3, bn=bn, name='rdb2')
-      n5 = res_dense_block(n4, bn=bn, name='rdb3')
+      n3 = res_dense_block(n2, conv_kernel=conv_kernel, bn=bn, name='rdb1')
+      n4 = res_dense_block(n3, conv_kernel=conv_kernel, bn=bn, name='rdb2')
+      n5 = res_dense_block(n4, conv_kernel=conv_kernel, bn=bn, name='rdb3')
 
       # global feature fusion (GFF)
       n6 = concat([n3, n4, n5], name='gff')
@@ -88,49 +89,54 @@ def res_dense_net(lr, factor=4, conv_kernel=3, bn=False, is_train=True, format_o
           n8 = upscale(n7, scale=2, name='upscale1')
         else :
           n8 = n7
-        out = conv3d(n8, out_channels=1, filter_size=conv_kernel, act=tf.tanh, name='out')
+        # out = conv3d(n8, out_channels=1, filter_size=conv_kernel, act=tf.tanh, name='out')
+        out = conv3d(n8, out_channels=1, filter_size=conv_kernel, name='out')
     
       else:
         out = n7
 
       return out        
-        
 
-def res_dense_net_4gpu(lr, factor=4, conv_kernel=3, format_out=True, name='generator'):
+def RDN_end(feat, factor=4, conv_kernel=3, bn=False, is_train=True, format_out=True, reuse=False, name='RDN'):
+    '''Residual Dense net without the first 2 input layers
+    Params:
+      see res_dense_net
+    '''
+    assert factor in [2, 4]
+
     G0 = 64
+    with tf.variable_scope(name, reuse=reuse):
+      n = InputLayer(feat, 'lr') if not isinstance(feat, Layer) else feat
      
-    with tf.variable_scope(name):
-      with tf.variable_scope('RDN'):
-        with tf.device('/gpu:0'):  
-          n = InputLayer(lr, 'lr')
-          
-          # shallow feature extraction layers
-          n1 = conv3d(n, out_channels=G0, filter_size=conv_kernel, name='shallow1')
-          n2 = conv3d(n1, out_channels=G0, filter_size=conv_kernel, name='shallow2')
-          
-          with tf.device('/gpu:1'):
-            n3 = res_dense_block(n2, name='rdb1')
-          with tf.device('/gpu:2'):
-            n4 = res_dense_block(n3, name='rdb2')
-          with tf.device('/gpu:3'):
-            n5 = res_dense_block(n4, name='rdb3')
+      # shallow feature extraction layers
 
-          # global feature fusion (GFF)
-          n6 = concat([n3, n4, n5], name='gff')
-          n6 = conv3d(n6, out_channels=G0, filter_size=1, name='gff/conv1')
-          n6 = conv3d(n6, out_channels=G0, filter_size=conv_kernel, name='gff/conv2')
-          
-          # global residual learning 
-          n7 = ElementwiseLayer([n6, n1], combine_fn=tf.add, name='grl')
-          
-          if factor == 4:
-            n8 = upscale(n7, scale=2, name='upscale1')
-            n8 = upscale(n8, scale=2, name='upscale2')
-          elif factor == 3:
-            n8 = n6 = conv3d(n7, out_channels=27, filter_size=1, name='conv3')
-            n8 = upscale(n8, scale=3, name='upscale1')
-            
-          out = conv3d(n8, out_channels=1, filter_size=conv_kernel, act=tf.tanh, name='out')
-          
-          return out        
-        
+      # n1 = conv3d(n, out_channels=G0, filter_size=conv_kernel, name='shallow1')
+      # if bn: n1 = batch_norm(n1, is_train=is_train, name='bn1') 
+      # n2 = conv3d(n1, out_channels=G0, filter_size=conv_kernel, name='shallow2')
+      # if bn: n2 = batch_norm(n2, is_train=is_train, name='bn2') 
+      
+      n3 = res_dense_block(n, conv_kernel=conv_kernel, bn=bn, name='rdb1')
+      n4 = res_dense_block(n3, conv_kernel=conv_kernel, bn=bn, name='rdb2')
+      n5 = res_dense_block(n4, conv_kernel=conv_kernel, bn=bn, name='rdb3')
+
+      # global feature fusion (GFF)
+      n6 = concat([n3, n4, n5], name='gff')
+      n6 = conv3d(n6, out_channels=G0, filter_size=1, name='gff/conv1')
+      if bn: n6 = batch_norm(n6, is_train=is_train, name='bn3') 
+      n6 = conv3d(n6, out_channels=G0, filter_size=conv_kernel, name='gff/conv2')
+      if bn: n6 = batch_norm(n6, is_train=is_train, name='bn4') 
+      
+      # global residual learning 
+      #n7 = ElementwiseLayer([n6, n1], combine_fn=tf.add, name='grl')
+      n7 = n6
+      
+      if factor == 4:
+        n8 = upscale(n7, scale=2, name='upscale1')
+      else :
+        n8 = n7
+      #out = conv3d(n8, out_channels=1, filter_size=conv_kernel, act=tf.sigmoid, name='out')
+      out = conv3d(n8, out_channels=1, filter_size=conv_kernel, name='out')
+    
+      
+
+      return out        

@@ -1,10 +1,11 @@
 import tensorflow as tf
 import tensorlayer as tl
 import numpy as np
-from tensorlayer.layers import Layer, Conv3dLayer, DeConv3dLayer, ConcatLayer, BatchNormLayer, MaxPool3d
+from tensorlayer.layers import Layer, Conv3dLayer, DeConv3dLayer, Conv2dLayer, DeConv2dLayer, ConcatLayer, BatchNormLayer, MaxPool3d
 
 __all__ = ['conv3d',
     'conv3d_transpose',
+    'upscale',
     'concat',
     'batch_norm',
     'max_pool3d',
@@ -39,7 +40,31 @@ def conv3d(layer, out_channels, filter_size=3, stride=1, act=tf.identity, paddin
     shape=[filter_size,filter_size,filter_size,in_channels,out_channels]
     strides=[1,stride,stride,stride,1]
     return Conv3dLayer(layer, act=act, shape=shape, strides=strides, padding=padding, W_init=W_init, b_init=b_init, name=name)
-    
+
+def conv2d(layer, out_channels, filter_size=3, stride=1, act=tf.identity, padding='SAME', W_init=w_init, b_init=b_init, name='conv2d'):
+    in_channels = layer.outputs.get_shape().as_list()[-1]
+    return Conv2dLayer(layer = layer,
+                act = act,
+                shape = [filter_size, filter_size, in_channels, out_channels],
+                strides=[1, stride, stride, 1],
+                padding=padding,
+                W_init = w_init,
+                b_init = b_init,
+                name =name)   
+
+def conv2d_transpose(input, out_channels, filter_size, stride, act=None, padding='SAME', name='conv2d_transpose'):
+    batch, height, width, in_channels = input.outputs.get_shape().as_list()
+    output_shape = [batch, height*stride, width*stride, out_channels]
+    return DeConv2dLayer(
+        layer = input,
+        act = act,
+        shape = [filter_size, filter_size, out_channels, in_channels],
+        output_shape = output_shape,
+        strides = [1, stride, stride, 1],
+        padding = padding,
+        name =name,
+    )
+
 def conv3d2(input, out_channels, filter_size=3, stride=1, padding='SAME', name='conv3d'):
     in_channels = input.get_shape().as_list()[-1]
     filter_shape = [filter_size, filter_size, filter_size, in_channels, out_channels]
@@ -50,6 +75,9 @@ def conv3d2(input, out_channels, filter_size=3, stride=1, padding='SAME', name='
         bias = tf.get_variable(name='bias_conv3d', shape=[out_channels], initializer=tf.constant_initializer(value=0.0))
         return tf.nn.conv3d(input, weight, strides, padding)
 
+def upscale(layer, scale=2, only_z=False, name='upscale'):
+    return SubVoxelConv(layer, scale=scale, only_z=only_z, n_out_channel=None, act=tf.identity, name=name)
+    
 def concat(layer, concat_dim=-1, name='concat'):
     return ConcatLayer(layer, concat_dim=concat_dim, name=name)        
 
@@ -67,6 +95,7 @@ def prelu(x, name='prelu'):
         alphas = tf.get_variable(name='alphas', shape=w_shape, initializer=tf.constant_initializer(value=0.0) )
         out = tf.nn.relu(x) + tf.multiply(alphas, (x - tf.abs(x))) * 0.5
         return out
+
 
 
 class LReluLayer(Layer):
@@ -112,7 +141,7 @@ def _interpolateXY(data, ratio, nchannels_out=1):
    X_ = tf.reshape(Xr_, (bsize, d, h*ratio, w*ratio, int(nchannels_out)))
    return X_
    
-def SubVoxelConv(net, scale=2, n_out_channel=None, act=tf.identity, name='subpixel_conv3d'):    
+def SubVoxelConv(net, scale=2, only_z=False, n_out_channel=None, act=tf.identity, name='subpixel_conv3d'):    
     
     """
     Inflate pixles in [channels] into [depth height width] to interpola the 3-d image 
@@ -123,36 +152,46 @@ def SubVoxelConv(net, scale=2, n_out_channel=None, act=tf.identity, name='subpix
     scope_name = tf.get_variable_scope().name
     if scope_name:
         name = scope_name + '/' + name
-        
-    def _PS(X, r, n_out_channel):
+
+    
+
+    def _PS(X, r, n_out_channel, z_only=False):
         if n_out_channel >= 1:
-            assert int(X.get_shape()[-1]) == (r ** 3) * n_out_channel, "n_channels_in == scale^3 * n_channels_out"
             batch_size, depth, height, width, channels = X.get_shape().as_list()
             batch_size = tf.shape(X)[0]
             Xs = tf.split(X, r, 4)
             
-            i = 0
-            for subx in Xs:
-                Xs[i] = _interpolateXY(subx, scale, nchannels_out=int(Xs[i].get_shape()[-1]) / (scale**2))
-                i += 1
+            if z_only is False:
+                i = 0
+                for subx in Xs:
+                    Xs[i] = _interpolateXY(subx, scale, nchannels_out=int(Xs[i].get_shape()[-1]) / (scale**2))
+                    i += 1
             
             Xr = tf.concat(Xs, 2)  # concat at height dimension
-            print(batch_size)
-            X = tf.reshape(Xr, (batch_size, depth*scale, height*scale, width*scale, n_out_channel))
+            if z_only is False:
+                X = tf.reshape(Xr, (batch_size, depth*scale, height*scale, width*scale, n_out_channel))
+            else:
+                X = tf.reshape(Xr, (batch_size, depth*scale, height, width, n_out_channel))
             
         return X
-    
+
+
     inputs = net.outputs
     
+    
+    down_factor = scale ** 3
+    if only_z:
+        down_factor = scale
+
     if n_out_channel is None:
-        assert int(inputs.get_shape()[-1]) / (scale ** 3) % 1 == 0, "nchannels_in == ratio^3 * nchannels_out"
-        n_out_channel = int(int(inputs.get_shape()[-1]) / (scale ** 3))
+        assert int(inputs.get_shape()[-1]) / down_factor % 1 == 0, "nchannels_in == ratio^3 * nchannels_out"
+        n_out_channel = int(int(inputs.get_shape()[-1]) / down_factor)
         
     print("  SubvoxelConv  %s : scale: %d n_out_channel: %s act: %s " % (name, scale, n_out_channel, act.__name__))  
     
     net_new = Layer(inputs, name=name)
     with tf.variable_scope(name) as vs:
-        net_new.outputs = act(_PS(inputs, r=scale, n_out_channel=n_out_channel))
+        net_new.outputs = act(_PS(inputs, r=scale, n_out_channel=n_out_channel, z_only=only_z))
     
     net_new.all_layers = list(net.all_layers)
     net_new.all_params = list(net.all_params)
