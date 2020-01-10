@@ -1,3 +1,4 @@
+import re
 import imageio
 import tensorflow as tf
 import tensorlayer as tl
@@ -8,29 +9,55 @@ import scipy.io
 
 __all__ = ['read_all_images',
     'load_and_assign_ckpt',
-    'reformat',
-    'get_tiff_fn',
+    'imread2d',
+    'imwrite2d',
     'rearrange3d_fn',
     'write3d',
     'interpolate3d',
+    '_raise',
+    'get_file_list',
+    'load_im',
+    'normalize_percentile',
+    'is_number',
     ]
 
-def read_all_images(path, z_range, format_out=True, factor=None):
+def _raise(e):
+    raise e
+
+
+def get_file_list(path, regx):
+    import os
+
+    file_list = os.listdir(path)
+    file_list = [f for _, f in enumerate(file_list) if re.search(regx, f)]
+    return file_list
+
+def load_im(path):
+    if re.search('.*.tif', path):
+        im = get_tiff_fn(path)
+    elif re.search('.*.mat', path):
+        im = load_im_from_mat(path)
+    else:
+        _raise(ValueError('unknown image format : %s' % path))
+    return im
+
+def read_all_images(path, z_range, format_out=True, factor=None, transform=None, **kwargs):
     """
     Params:
         - format_out : see function 'transform' for details 
         - factor : useful when format_out == False
     return images in shape [n_images, depth, height, width, channels]
     """
-    train_set = []
-    img_list = sorted(tl.files.load_file_list(path=path, regx='.*.tif', printable=False))
+    im_set = []
+    img_list = get_file_list(path=path, regx='.*.tif')
     
     if format_out == False:
         z_range = z_range // factor[0]
             
     for img_file in img_list:
         print(path + img_file)
-        img = get_tiff_fn(img_file, path) 
+        img = load_im(path + img_file)
+
         if format_out == False:
             assert factor != None
             img = transform(img, factor=factor, inverse=False) 
@@ -39,19 +66,21 @@ def read_all_images(path, z_range, format_out=True, factor=None):
             img = img.astype(np.float32, casting='unsafe')
             
         print(img.shape)
+        if transform is not None:
+            img = transform(img, **kwargs)
 
         depth = img.shape[0]
         for d in range(0, depth, z_range):
             if d + z_range <= depth:
-                train_set.append(img[d:(d+z_range), ...])
+                im_set.append(img[d:(d+z_range), ...])
     
-    if (len(train_set) == 0):
+    if (len(im_set) == 0):
         raise Exception("none of the images have been loaded, please check the config img_size and its real dimension")
     
-    print('read %d from %s' % (len(train_set), path)) 
-    train_set = np.asarray(train_set)
-    print(train_set.shape)
-    return train_set
+    print('read %d from %s' % (len(im_set), path)) 
+    im_set = np.asarray(im_set)
+    print(im_set.shape)
+    return im_set
 
 ## 
 # TODO: is the parameter sess necessary ?
@@ -73,20 +102,29 @@ def reformat(output):
     
     return resized_out
 
-def get_tiff_fn(file, path):
+def imread2d(path):
+    im = imageio.imread(path)
+    return im
+
+def imwrite2d(im, path):
+    imageio.imwrite(path, im)
+
+def get_tiff_fn(path):
     """
     return volume in shape of [depth, height, width, channels=1]
     """
-    image = imageio.volread(path + file) # [depth, height, width]
+    image = imageio.volread(path) # [depth, height, width]
     max_val = 255.
     if image.dtype == np.uint8:
         pass
     elif image.dtype == np.uint16:
         max_val = 65535.
+    elif image.dtype == np.float32:
+        pass
     else:
         raise Exception('\nunsupported image bitdepth %s\n' % str(image.dtype))
     
-    image = normalize_fn(image, max_val)
+    image = image if image.dtype == np.float32 else normalize_fn(image, max_val)
     image = image[..., np.newaxis]       # [depth, height, width, channels=1]
     return image
 
@@ -110,12 +148,33 @@ def generate_mr_fn(image, mode='ds', **kwargs) :
         tmp = image
     return tmp
 
+
+def normalize_percentile(im, low, high):
+    """Normalize the input 'im' by im = (im - p_low) / (p_high - p_low), where p_low/p_high is the 'low'th/'high'th percentile of the im
+    Params:
+        -im  : numpy.ndarray
+        -low : float, typically 0.2
+        -high: float, typically 99.8
+    return:
+        normalized ndarray of which most of the pixel values are in [0, 1]
+    """
+    eps = 1e-10
+    p_low, p_high = np.percentile(im, low), np.percentile(im, high)
+    im = (im - p_low) / (p_high - p_low + eps)
+    return im
+
 def normalize_fn(x, max_val=255.):
     #max_val = 255. if bitdepth == 8 else 65535.
     x = x / (max_val/2) - 1
     return x
 
 
+def is_number(x):
+    try:
+        float(x)
+        return True
+    except ValueError:
+        return False
 
 def rearrange3d_fn(image):
     """
@@ -191,21 +250,29 @@ def _write3d(x, filename, scale_pixel_value=True):
         -x : [depth, height, width]
         -max_val : possible maximum pixel value (65535 for 16-bit or 255 for 8-bit)
     """
+    min_val = np.min(x)
+    max_val = np.max(x)
     if scale_pixel_value:
         x = x - np.min(x)
-        #x = x + 1.  #[0, 2]
-        x = x * 65535. / 2.
+        x = x / np.max(x)
+        #print('min: %.2f max: %.2f\n' % (np.min(x), np.max(x)))
+        #x = x + 1.2  #[0, 2]
+        x = x * (255. / 2.)
+        x = x.astype(np.uint8)
 
-    x = x.astype(np.uint16)
+    else:
+        x = x.astype(np.float32)
+
     imageio.volwrite(filename, x)
     #stack = sitk.GetImageFromArray(x)
     #sitk.WriteImage(stack, filename)
-        
+    return max_val, min_val
+
 def write3d(x, path, scale_pixel_value=True, savemat=False):
     """
     Params:
         -x : [batch, depth, height, width, channels] or [batch, height, width, channels>3]
-        -scale_pixel_value : scale pixels value to [0, 65535] is True
+        -scale_pixel_value : scale pixels value to [0, 65535] if True
         -savemat : if to save x as an extra .mat file.
     """
     
@@ -224,11 +291,15 @@ def write3d(x, path, scale_pixel_value=True, savemat=False):
     batch = x.shape[0]
     n_channels = x.shape[-1]
     
+    min_val = 1e10
+    max_val = -1e10
     if dims == 4:
         x_re = np.transpose(x, axes=[0, 1, 2, 3])
         for b in range(batch):
             x_re_b = x_re[b, ...]
-            _write3d(x_re_b, new_path + '_{}.{}'.format(b, fragments[-1]) , scale_pixel_value)  
+            tmp_max, tmp_min = _write3d(x_re_b, new_path + '_{}.{}'.format(b, fragments[-1]) , scale_pixel_value)  
+            min_val = min_val if min_val < tmp_min else tmp_min
+            max_val = max_val if max_val > tmp_max else tmp_max
             
     elif dims == 5:
         x_re = x
@@ -236,10 +307,25 @@ def write3d(x, path, scale_pixel_value=True, savemat=False):
             x_re_b = x_re[b, ...]
             for c in range(n_channels):
                 x_re_c = x_re_b[..., c]
-                _write3d(x_re_c, new_path + '_b{}_c{}.{}'.format(b, c, fragments[-1]) , scale_pixel_value)      
+                tmp_max, tmp_min = _write3d(x_re_c, new_path + '_b{}_c{}.{}'.format(b, c, fragments[-1]) , scale_pixel_value) 
+                min_val = min_val if min_val < tmp_min else tmp_min   
+                max_val = max_val if max_val > tmp_max else tmp_max  
                 #print(image.shape)
     else:
         raise Exception('unsupported dims : %s' % str(x.shape))
+    
+    return max_val, min_val
+
+def load_im_from_mat(filename):
+    mat = scipy.io.loadmat(filename)
+    for key, val in mat.items():
+        if key == 'block_norm':
+            block = np.asarray(val)                         # [height, width, depth]
+            block = np.transpose(block, axes=[2,0,1])       # [depth, height, width]
+            block = block[..., np.newaxis]                  # [depth, height, width, channel==1]
+            return block
+
+    return None
 
 def save_mat(im, filename):
     """save the image as .mat file.
