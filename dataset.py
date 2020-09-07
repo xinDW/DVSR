@@ -2,6 +2,7 @@ import tensorflow as tf
 import tensorlayer as tl
 import numpy as np
 import os
+import imageio
 from utils import load_im, interpolate3d, _raise
 
 class Dataset:
@@ -17,6 +18,8 @@ class Dataset:
         test_mr_path=None,
         valid_lr_path=None,
         dtype=np.float32,
+        normalization = 'fixed',
+        keep_all_blocks = False,
         transforms = None, # [trans_fn_for_lr, trans_fn_for_hr] or None
         shuffle = True,
         **kwargs           # keyword arguments for transform function
@@ -34,6 +37,10 @@ class Dataset:
         self.test_mr_path = test_mr_path
         self.valid_lr_path = valid_lr_path
 
+        normalization in ['fixed', 'percentile'] or _raise(ValueError('unknown normalization mode: %' % normalization))
+        self.normalize = normalization
+
+        self.keep_all_blocks = keep_all_blocks
         self.transforms = transforms if transforms is not None else [None, None]
         self.transforms_args = kwargs
         self.dtype = dtype
@@ -54,6 +61,21 @@ class Dataset:
 
         self.prepared = False
 
+    def _check_inputs(self):
+        hr_im_list = sorted(tl.files.load_file_list(path=self.train_hr_path, regx='.*.tif', printable=False))
+        lr_im_list = sorted(tl.files.load_file_list(path=self.train_lr_path, regx='.*.tif', printable=False))
+        len(hr_im_list) == len(lr_im_list) or _raise(ValueError("Num of HR and LR not equal"))
+
+        for hr_file, lr_file in zip(hr_im_list, lr_im_list):
+            hr = imageio.volread(os.path.join(self.train_hr_path, hr_file))
+            lr = imageio.volread(os.path.join(self.train_lr_path, lr_file))
+            # print('checking dims: \n%s %s\n%s %s' % (hr_file, str(hr.shape), lr_file, str(lr.shape)))
+            if 'factor' not in dir(self):
+                self.factor = hr.shape[0] // lr.shape[0]
+            valid_dim = [self.factor == hs / ls for hs, ls in zip(hr.shape, lr.shape)]
+            if not all(valid_dim):
+                raise(ValueError('dims mismatch: \n%s %s\n%s %s' % (hr_file, str(hr.shape), lr_file, str(lr.shape))) )
+
     def _load_training_data(self, shuffle=True):
 
         def _shuffle_in_unison(arr1, arr2):
@@ -66,71 +88,110 @@ class Dataset:
             new_idx = np.random.permutation(len(arr1)) 
             return arr1[new_idx], arr2[new_idx]
 
-        def _read_images(path, img_size, dtype=np.float32, transform=None, **kwargs):
+        def _shuffle_index(len):
+            new_index = np.random.permutation(len)
+            return new_index
+
+        def _get_im_blocks(path, block_size, dtype=np.float32, transform=None, keep_all=True, keep_list=None, **kwargs):
             
-            """
+            """laod image volume and crop into small blocks for training dataset.
             Params:
-                -img_size : [depth height width channels]  
+                -block_size : [depth height width channels]  
                 -transform : transformation function applied to the loaded image
+                -keep_all: boolean, whether to kepp all the blocks
+                -keep_list : numpy list, index of block to be kept, useful when keep_all is False
                 -kwargs : key-word args for transform fn
 
             return images in shape [n_images, depth, height, width, channels]
             """
             
-            depth, height, width, _ = img_size # the desired image size
-            images_set = []
-            #img_list = sorted(tl.files.load_file_list(path=path, regx='.*.tif', printable=False))
-            img_list = sorted(tl.files.load_file_list(path=path, regx='.*.mat', printable=False))
-            for img_file in img_list:
-                img = load_im(path + img_file) 
+            depth, height, width, _ = block_size # the desired image block size
+            blocks = []
+            im_list = sorted(tl.files.load_file_list(path=path, regx='.*.tif', printable=False))
+            # im_list = sorted(tl.files.load_file_list(path=path, regx='.*.mat', printable=False))
+
+            block_idx = -1
+            idx_saved = []
+            keep_list_cursor = 0
+
+            for im_file in im_list:
+                im = load_im(path + im_file, normalize=self.normalize) 
                 
-                if (img.dtype != dtype):
-                    img = img.astype(dtype, casting='unsafe')
-                print('%s : %s' % ((path + img_file), str(img.shape)))  
+                if (im.dtype != dtype):
+                    im = im.astype(dtype, casting='unsafe')
+                print('\r%s : %s ' % ((path + im_file), str(im.shape)), end='')  
                 
                 if transform is not None:
-                    img = transform(img, **kwargs)
-                    print(img.shape)
-                d_real, h_real, w_real, _ = img.shape # the actual size of the image
+                    im = transform(im, **kwargs)
+                    print('transfrom: %s' % str(im.shape), end = '')
+                d_real, h_real, w_real, _ = im.shape # the actual size of the image
+                max_val = np.percentile(im, 98)
+
+                
                 for d in range(0, d_real, depth):
-                    if d + depth <= d_real:
-                        for h in range(0, h_real, height):
-                            for w in range(0, w_real, width):
-                                if h + height <= h_real and w + width <= w_real :
-                                    images_set.append(img[d:(d+depth), h:(h+height), w:(w+width), :])
-        
-            
-            print('read %d from %s' % (len(images_set), path)) 
-            images_set = np.asarray(images_set)
-        
-            return images_set
+                    for h in range(0, h_real, height):
+                        for w in range(0, w_real, width):
+                            if d + depth > d_real or h + height > h_real or w + width > w_real :
+                                # out of image bounds
+                                continue
+                            
+                            block = im[d:(d+depth), h:(h+height), w:(w+width), :]
+                            block_idx += 1
 
-        #self.training_data_lr = _read_images(self.train_lr_path, self.hr_size, self.dtype, transform=interpolate3d)
-        self.training_data_lr = _read_images(self.train_lr_path, self.lr_size, transform=self.transforms[0], **self.transforms_args)
-        len(self.training_data_lr) != 0 or _raise(Exception("none of the LRs have been loaded, please check the image size ({} desired)".format(str(self.lr_size))) )
+                            if not keep_all:
+                                if keep_list is None:
+                                    if (np.max(block) > max_val * 0.7):
+                                        blocks.append(block)
+                                        idx_saved.append(block_idx)
+                                else:
+                                    if (keep_list_cursor < len(keep_list) and block_idx == keep_list[keep_list_cursor]):
+                                        blocks.append(block)
+                                        keep_list_cursor += 1
+                            else:
+                                blocks.append(block)
+                            
+            print('\nload %d of size %s from %s' % (len(blocks), str(block_size), path)) 
+            blocks = np.asarray(blocks)
 
-        self.training_data_hr = _read_images(self.train_hr_path, self.hr_size, transform=self.transforms[1])
+            keep_list = idx_saved if keep_list is None else keep_list
+            return blocks, keep_list
+
+
+
+        self._check_inputs()
+        self.training_data_hr, valid_indices = _get_im_blocks(self.train_hr_path, 
+                                                            self.hr_size, 
+                                                            transform=self.transforms[1], keep_all=self.keep_all_blocks)
         len(self.training_data_hr) != 0 or _raise(Exception("none of the HRs have been loaded, please check the image size ({} desired)".format(str(self.hr_size))) )
+
+
+        #self.training_data_lr = _get_im_blocks(self.train_lr_path, self.hr_size, self.dtype, transform=interpolate3d)
+        self.training_data_lr, _ = _get_im_blocks(self.train_lr_path, 
+                                                    self.lr_size, 
+                                                    keep_all=self.keep_all_blocks, 
+                                                    keep_list=valid_indices, 
+                                                    transform=self.transforms[0], **self.transforms_args)
+        len(self.training_data_lr) != 0 or _raise(Exception("none of the LRs have been loaded, please check the image size ({} desired)".format(str(self.lr_size))) )
+        self.training_data_hr.shape[0] == self.training_data_lr.shape[0] or _raise(ValueError("num of LR blocks and HR blocks not equal"))
+        
+        
 
         self.test_data_split = int(len(self.training_data_hr) * 0.2)
         if self.hasTest:
-            self.test_data_lr = _read_images(self.test_lr_path, self.lr_size, transform=self.transforms[0], **self.transforms_args)
-            self.test_data_hr = _read_images(self.test_hr_path, self.hr_size, transform=self.transforms[1])
+            self.test_data_lr, _ = _get_im_blocks(self.test_lr_path, self.lr_size, transform=self.transforms[0], **self.transforms_args)
+            self.test_data_hr, _ = _get_im_blocks(self.test_hr_path, self.hr_size, transform=self.transforms[1])
             self.test_data_split = 0 
 
         if self.hasMR:
-            self.training_data_mr = _read_images(self.train_mr_path, self.mr_size)
+            self.training_data_mr, _ = _get_im_blocks(self.train_mr_path, self.mr_size, keep_all=self.keep_all_blocks, keep_list=valid_indices)
+            self.training_data_mr.shape[0] == self.training_data_lr.shape[0] or _raise(ValueError("num of MR blocks and LR blocks not equal"))
             if self.hasTest:
-                self.test_data_mr = _read_images(self.test_mr_path, self.mr_size)
+                self.test_data_mr, _ = _get_im_blocks(self.test_mr_path, self.mr_size)
         
         if self.hasValidation:
-            self.valid_data_lr = _read_images(self.valid_lr_path, self.lr_size, transform=self.transforms[0], **self.transforms_args)
+            self.valid_data_lr, _ = _get_im_blocks(self.valid_lr_path, self.lr_size, transform=self.transforms[0], **self.transforms_args)
            # self.plchdr_lr_valid = tf.placeholder(self.dtype, shape=self.valid_data_lr.shape, name='valid_lr')
-
-        assert self.training_data_hr.shape[0] == self.training_data_lr.shape[0]
-        if self.hasMR:
-            assert self.training_data_mr.shape[0] == self.training_data_lr.shape[0]
-
+        
         return self.training_data_hr.shape[0]
 
     def prepare(self, batch_size, n_epochs):
