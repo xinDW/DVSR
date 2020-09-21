@@ -18,7 +18,8 @@ normalization    = config.normalization
 
 checkpoint_dir = config.TRAIN.ckpt_dir
 pb_file_dir    = 'checkpoint/pb/'
-lr_size        = config.VALID.lr_img_size 
+lr_size        = config.VALID.block_size 
+overlap        = config.VALID.block_overlap
 
 valid_lr_img_path = config.VALID.lr_img_path
 save_dir          = config.VALID.saving_path
@@ -185,8 +186,6 @@ def evaluate_whole(epoch, load_graph_from_pb=False, half_precision_infer=False, 
     model      = Model(net, sess, LR)
 
     block_size = lr_size[0:3]
-    overlap    = 0.2
-    
       
     if large_volume:
         start_time = time.time()

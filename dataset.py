@@ -1,8 +1,10 @@
+import os
+
 import tensorflow as tf
 import tensorlayer as tl
 import numpy as np
-import os
 import imageio
+
 from utils import load_im, interpolate3d, _raise
 
 class Dataset:
@@ -62,6 +64,7 @@ class Dataset:
         self.prepared = False
 
     def _check_inputs(self):
+        print("checking training data dims ... ")
         hr_im_list = sorted(tl.files.load_file_list(path=self.train_hr_path, regx='.*.tif', printable=False))
         lr_im_list = sorted(tl.files.load_file_list(path=self.train_lr_path, regx='.*.tif', printable=False))
         len(hr_im_list) == len(lr_im_list) or _raise(ValueError("Num of HR and LR not equal"))
@@ -220,10 +223,10 @@ class Dataset:
         self.epoch = 0
         self.prepared = True
         
-        print('HR dataset: %s\nLR dataset: %s\n' % (str(self.training_data_hr.shape), str(self.training_data_lr.shape)))
+        print('HR dataset: %s\nLR dataset: %s' % (str(self.training_data_hr.shape), str(self.training_data_lr.shape)))
         if self.hasMR:
-            print('MR dataset: %s\n' % str(self.training_data_mr.shape))
-        
+            print('MR dataset: %s' % str(self.training_data_mr.shape))
+        print()
         return self.training_pair_num - self.test_data_split
 
     ## in case that the term "test" and "valid" are confusing:
