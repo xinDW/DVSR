@@ -1,8 +1,10 @@
 import os
 import time
+
 import numpy as np
 import tensorflow as tf
-from utils import normalize_percentile, _raise, get_file_list, imread2d, imwrite2d
+
+from utils import normalize_percentile, normalize_max, _raise, get_file_list, imread2d, imwrite2d
 
 class Model:
     def __init__(self, net, sess, input_plchdr):
@@ -22,31 +24,48 @@ class Model:
         self.sess = None
 
 class Predictor:
-    def __init__(self, factor, model, dtype=np.float32):
-        self.factor = factor
-        self.model  = model
-        self.dtype  = dtype
+    def __init__(self, factor, model, half_precision=False):
+        self.factor       = factor
+        self.model        = model
+        self.model_dtype  = np.float16 if half_precision else np.float32
 
-    def __normalize_percentile(self, im, low=0.2, high=99.8):
-        return normalize_percentile(im.astype(self.dtype), low=low, high=high)
-        
-    def __normalize(self, im, max_v = None):
-        im = im.astype(self.dtype)
+    def __normalize_percentile(self, im, low=10, high=99.8):
+        return normalize_percentile(im.astype(self.model_dtype), low=low, high=high)
+
+    def __normalize_fixed(self, im, max_v=None):
         if max_v is None:
-            max_v = 255. if self.dtype == np.uint8 else 65535.
-        im = im / (max_v / 2) - 1
-        return im
+            max_v = self.__get_bitdepth_max(im)
+        else:
+            max_v = max_v * self.__get_bitdepth_max(im)
+            
+        im = im.astype(self.model_dtype)
+        return normalize_max(im, max_v)
 
-    def __reverse_norm(self, im):
-        # max_val = 255.
-        # im = np.tanh(im)
-        # im = (im + 1) * max_val / 2
+    def __get_bitdepth_max(self, im, dtype=None):
+        max_v = 0
+        im_dtype = im.dtype if dtype is None else dtype
 
-       
+        if im_dtype == np.uint8:
+            max_v = 255.
+        elif im_dtype == np.uint16:
+            max_v = 65535.
+        else :
+            max_v = np.max(im)
+        return max_v
+
+    def __reverse_norm(self, im, dtype=np.uint16, normalize_mode='fixed'):
+        
+        bitdepth_max =  self.__get_bitdepth_max(im, dtype)
+        
+        eps = 1e-6
         max_ = np.max(im)
-        min_ = np.min(im)
-        im = (im - min_) / (max_ - min_) * 255
-        return im.astype(np.uint8)
+        # min_ = np.min(im)
+        min_ = np.percentile(im, 0.2)
+        im   = np.clip(im, min_, max_)
+        im = (im - min_) / (max_ - min_ + eps) * bitdepth_max
+    
+        print('reverse normalization to [%.4f, %.4f]' % (np.min(im), np.max(im)))
+        return im.astype(dtype)
 
 
     def __predict_block(self, block):  
@@ -68,12 +87,14 @@ class Predictor:
         # block_size = [b if b <= i else i for b, i in zip(block_size, im.shape)]
 
         overlap = [i if i > 1 else i * s for i, s in zip(overlap, block_size)]
-        overlap = [0 if b == s else i for i, b, s in zip(overlap, block_size, im.shape)] # no overlap along the dims where the image size equal to the block size
+        overlap = [0 if b >= s else i for i, b, s in zip(overlap, block_size, im.shape)] # no overlap along the dims where the image size equal to the block size
+        overlap = [i if i % 2 == 0 else i + 1 for i in overlap]                          # overlap must be even number
 
         block_size = [b - 2 * i for b, i in zip(block_size, overlap)]                    # real block size when inference
         
         overlap    = [int(i) for i in overlap]
         block_size = [int(i) for i in block_size]
+
 
         print('block size (overlap excluded) : {} overlap : {}'.format(block_size, overlap))
 
@@ -82,7 +103,8 @@ class Predictor:
     def _padding_block(self, im, blk_size, overlap):
         grid_dim       = [int(np.ceil(float(i) / b)) for i, o, b in zip(im.shape, overlap, blk_size)]
         im_size_padded = [(g * b + b if o != 0 else g * b) for g, b, o in zip(grid_dim, blk_size, overlap)]
-        im_wrapped     = np.ones(im_size_padded, dtype=self.dtype) * np.min(im) 
+       
+        im_wrapped     = np.ones(im_size_padded, dtype=self.model_dtype) * np.min(im) 
 
         valid_region    = [slice(o // 2, o // 2 + i) for o, i in zip(overlap, im.shape)]
         sr_valid_region = [slice(o // 2 * self.factor, (o // 2 + i) * self.factor) for o, i in zip(overlap, im.shape)]
@@ -119,7 +141,7 @@ class Predictor:
         
         im_wrapped, valid_region_idx = self._padding_block(im, block_size, overlap)
         sr_size = [s * factor for s in im_wrapped.shape]
-        sr      = np.zeros(sr_size, dtype=self.dtype)
+        sr      = np.zeros(sr_size, dtype=self.model_dtype)
 
         for src, dst, in_blk in self.__region_iter(im_wrapped, block_size, overlap, factor):
             # print('source: {}  dst: {}  valid: {} '.format(src, dst, in_blk))
@@ -137,24 +159,28 @@ class Predictor:
         print('')
         return sr[tuple(valid_region_idx)]
 
-    def predict(self, im, block_size, overlap, low=0.2, high=99.8):
+    def predict(self, im, block_size, overlap, normalization='fixed', **kwargs):
+        normalization in ['fixed', 'percentile'] or _raise(ValueError('unknown normailze mode:%s' % normalization))
+        norm_fn = self.__normalize_fixed if normalization == 'fixed' else self.__normalize_percentile
+
+        im_dtype = im.dtype
+        im_dtype in [np.uint8, np.uint16] or _raise(ValueError('unknown image dtype:%s' % im_dtype))
+        im = norm_fn(im, **kwargs)
         
-        im = self.__normalize_percentile(im, low=low, high=high)
-        # im = self.__normalize(im, max_v = 255)
     
         print('normalized to [%.4f, %.4f]' % (np.min(im), np.max(im)))
         sr = self.predict_without_norm(im, block_size, overlap)
-        return self.__reverse_norm(sr)
+        return self.__reverse_norm(sr, normalize_mode=normalization)
 
 
 class LargeDataPredictor:
-    def __init__(self, data_path, saving_path, factor, model, block_size, overlap, dtype=np.float32):
+    def __init__(self, data_path, saving_path, factor, model, block_size, overlap, half_precision):
         self.data_path   = data_path
         self.saving_path = saving_path
         self.block_size  = block_size
         self.overlap     = overlap
-        self.predictor   = Predictor(factor=factor, model=model, dtype=dtype)
-        self.dtype       = dtype
+        self.predictor   = Predictor(factor=factor, model=model, half_precision=half_precision)
+        self.model_dtype = np.float16 if half_precision else np.float32
 
     def _prepare(self):
         
@@ -169,7 +195,7 @@ class LargeDataPredictor:
         self._prepare()
         
         block_depth = self.block_size[0]
-        block       = np.zeros([block_depth, self.height, self.width], dtype=self.dtype)
+        block       = np.zeros([block_depth, self.height, self.width], dtype=self.model_dtype)
        
         margin_z    = 5
         slice_iter  = margin_z
@@ -194,22 +220,22 @@ class LargeDataPredictor:
             time_left    = (self.n_slices - slice_iter) / slice_iter * time_elapsed
             print('%d slices processed in %.2f mins; %.2f extra mins required' % (slice_iter, time_elapsed, time_left))
 
-    def _sample_and_get_statistics(self, file_list, interval=100, low=50, high=99.8):
+    def _sample_and_get_statistics(self, file_list, interval=100, low=2, high=99.8):
         n_slices = len(file_list)
         n_slices > interval or _raise(ValueError('n_slices %d < sample interval %d' % (n_slices, interval)))
 
-        #samples = [imread2d(file_list[i]) for i in range(0, n_slices, interval)]
-        samples = imread2d(file_list[0]) 
-        samples = np.asarray(samples, dtype=self.dtype)
+        samples = [imread2d(file_list[i]) for i in range(0, n_slices, interval)]
+        # samples = imread2d(file_list[0]) 
+        samples = np.asarray(samples, dtype=self.model_dtype)
 
         print('samples volume : %s' % str(samples.shape))
-        # _, h, w = samples.shape
-        h, w = samples.shape
+        _, h, w = samples.shape
+        # h, w = samples.shape
 
-        # p_low  = np.percentile(samples, low)
-        # p_high = np.percentile(samples, high)
-        p_low  = 0
-        p_high = 8000
+        p_low  = np.percentile(samples, low)
+        p_high = np.percentile(samples, high)
+        # p_low  = 0
+        # p_high = 8000
         print('normalization thres: %.2f, %.2f' % (p_low, p_high))
 
         self.n_slices = n_slices
@@ -220,8 +246,8 @@ class LargeDataPredictor:
         
 
     def _normalize(self, block, p_low, p_high):
-        # return (block.astype(self.dtype) - p_low) / (p_high - p_low)
-        return (block.astype(self.dtype) / (p_high / 2) - 1)
+        # return (block.astype(self.model_dtype) - p_low) / (p_high - p_low)
+        return (block.astype(self.model_dtype) / (p_high / 2) - 1)
 
     def _reverse_normlize(self, block, min_v=0, max_v=255):  
         # print('global:[%.6f,%.6f], local [%.6f, %.6f]   ' % (min_v, max_v, np.min(block), np.max(block)), end='')

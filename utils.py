@@ -1,13 +1,13 @@
 import re
-import imageio
-import tensorflow as tf
-import tensorlayer as tl
-import numpy as np
+import os
 import math
+
+import imageio
 import scipy.io
+import tensorflow as tf
+import numpy as np
 
-
-__all__ = ['read_all_images',
+__all__ = ['parse_label',
     'load_and_assign_ckpt',
     'imread2d',
     'imwrite2d',
@@ -18,12 +18,42 @@ __all__ = ['read_all_images',
     'get_file_list',
     'load_im',
     'normalize_percentile',
+    'normalize_max',
     'is_number',
+    'exists_or_mkdir',
     ]
 
 def _raise(e):
     raise e
 
+def parse_label(label):
+    '''parse the parameters for network building.
+    Params:
+        label: string, defined at config.py
+    Return:
+        a dict that contains the following keys: 
+            'archi1': the net architecture for the stage1 subnet
+            'archi2': the net architecture for the stage2 subnet
+            'factor': the enhancement factor
+            'norm'  : normalization mode for preprocessing the images
+            'loss'  : loss functions for training 
+    '''
+    params = {}
+    partitions = label.split('_')
+    for p in partitions:
+        lhs, _, rhs = p.partition('-')
+        if '2stage' in lhs:
+            params['archi1'], params['archi2'] = rhs.split('+')
+        elif '1stage' in lhs:
+            params['archi1'] = None
+            params['archi2'] = rhs
+        elif 'factor' in lhs:
+            params['factor'] = int(rhs)
+        elif 'norm' in lhs:
+            params['norm'] = rhs
+        elif 'loss' in lhs:
+            params['loss'] = rhs
+    return params
 
 def get_file_list(path, regx):
     import os
@@ -32,61 +62,21 @@ def get_file_list(path, regx):
     file_list = [f for _, f in enumerate(file_list) if re.search(regx, f)]
     return file_list
 
-def load_im(path):
+def load_im(path, **kwargs):
     if re.search('.*.tif', path):
-        im = get_tiff_fn(path)
+        im = get_normalized_im(path, **kwargs)
     elif re.search('.*.mat', path):
         im = load_im_from_mat(path)
     else:
         _raise(ValueError('unknown image format : %s' % path))
     return im
 
-def read_all_images(path, z_range, format_out=True, factor=None, transform=None, **kwargs):
-    """
-    Params:
-        - format_out : see function 'transform' for details 
-        - factor : useful when format_out == False
-    return images in shape [n_images, depth, height, width, channels]
-    """
-    im_set = []
-    img_list = get_file_list(path=path, regx='.*.tif')
-    
-    if format_out == False:
-        z_range = z_range // factor[0]
-            
-    for img_file in img_list:
-        print(path + img_file)
-        img = load_im(path + img_file)
-
-        if format_out == False:
-            assert factor != None
-            img = transform(img, factor=factor, inverse=False) 
-
-        if (img.dtype != np.float32):
-            img = img.astype(np.float32, casting='unsafe')
-            
-        print(img.shape)
-        if transform is not None:
-            img = transform(img, **kwargs)
-
-        depth = img.shape[0]
-        for d in range(0, depth, z_range):
-            if d + z_range <= depth:
-                im_set.append(img[d:(d+z_range), ...])
-    
-    if (len(im_set) == 0):
-        raise Exception("none of the images have been loaded, please check the config img_size and its real dimension")
-    
-    print('read %d from %s' % (len(im_set), path)) 
-    im_set = np.asarray(im_set)
-    print(im_set.shape)
-    return im_set
-
 ## 
 # TODO: is the parameter sess necessary ?
 ##
 def load_and_assign_ckpt(sess, ckpt_file, net): 
-     return tl.files.load_and_assign_npz(sess=sess, name=ckpt_file, network=net) 
+    import tensorlayer as tl
+    return tl.files.load_and_assign_npz(sess=sess, name=ckpt_file, network=net) 
     
 def reformat(output):
     """
@@ -109,24 +99,34 @@ def imread2d(path):
 def imwrite2d(im, path):
     imageio.imwrite(path, im)
 
-def get_tiff_fn(path):
+def get_normalized_im(path, normalize='fixed'):
+    """read 3-D tiff and normalize
+    Params:
+        normalize: str, in ['fixed', 'percentile']
+
+    Return:
+        np.adarray in shape of [depth, height, width, channels=1]
     """
-    return volume in shape of [depth, height, width, channels=1]
-    """
-    image = imageio.volread(path) # [depth, height, width]
+
+    assert normalize in ['fixed', 'percentile']
+
+    im = imageio.volread(path) # [depth, height, width]
     max_val = 255.
-    if image.dtype == np.uint8:
+    if im.dtype in [np.uint8, 'uint8']:
         pass
-    elif image.dtype == np.uint16:
+    elif im.dtype in [np.uint16, 'uint16']:
         max_val = 65535.
-    elif image.dtype == np.float32:
+    elif im.dtype in [np.float32, 'float32']:
         pass
     else:
-        raise Exception('\nunsupported image bitdepth %s\n' % str(image.dtype))
+        raise Exception('\nunsupported image bitdepth %s\n' % str(im.dtype))
     
-    image = image if image.dtype == np.float32 else normalize_fn(image, max_val)
-    image = image[..., np.newaxis]       # [depth, height, width, channels=1]
-    return image
+    if (im.dtype == np.float32) and normalize == 'percentile':
+        raise ValueError('normalization mode "fixed" cannot be applied to image with dtype float32')
+    
+    im = normalize_max(im, max_val) if normalize == 'fixed' else normalize_percentile(im)
+    im = im[..., np.newaxis]       # [depth, height, width, channels=1]
+    return im
 
 def generate_mr_fn(image, mode='ds', **kwargs) :
     """
@@ -149,7 +149,7 @@ def generate_mr_fn(image, mode='ds', **kwargs) :
     return tmp
 
 
-def normalize_percentile(im, low, high):
+def normalize_percentile(im, low=0.2, high=99.8):
     """Normalize the input 'im' by im = (im - p_low) / (p_high - p_low), where p_low/p_high is the 'low'th/'high'th percentile of the im
     Params:
         -im  : numpy.ndarray
@@ -163,10 +163,13 @@ def normalize_percentile(im, low, high):
     im = (im - p_low) / (p_high - p_low + eps)
     return im
 
-def normalize_fn(x, max_val=255.):
-    #max_val = 255. if bitdepth == 8 else 65535.
-    x = x / (max_val/2) - 1
-    return x
+def normalize_max(im, max_v=None):
+    if max_v is None:
+        max_v = np.max(im) 
+        
+    im = im / (max_v/2.) - 1
+    return im
+
 
 
 def is_number(x):
@@ -295,19 +298,24 @@ def write3d(x, path, scale_pixel_value=True, savemat=False):
     max_val = -1e10
     if dims == 4:
         x_re = np.transpose(x, axes=[0, 1, 2, 3])
+        
         for b in range(batch):
             x_re_b = x_re[b, ...]
-            tmp_max, tmp_min = _write3d(x_re_b, new_path + '_{}.{}'.format(b, fragments[-1]) , scale_pixel_value)  
+            suffix = '_{}.{}'.format(b, fragments[-1]) if batch > 1 else '_.{}'.format(fragments[-1])
+            tmp_max, tmp_min = _write3d(x_re_b, new_path + suffix, scale_pixel_value)  
             min_val = min_val if min_val < tmp_min else tmp_min
             max_val = max_val if max_val > tmp_max else tmp_max
             
     elif dims == 5:
         x_re = x
+
         for b in range(batch):
             x_re_b = x_re[b, ...]
+            suffixb = '_b{}'.format(b) if batch > 1 else ''
             for c in range(n_channels):
                 x_re_c = x_re_b[..., c]
-                tmp_max, tmp_min = _write3d(x_re_c, new_path + '_b{}_c{}.{}'.format(b, c, fragments[-1]) , scale_pixel_value) 
+                suffixc = '_c{}.{}'.format(c, fragments[-1]) if n_channels > 1 else '.{}'.format(fragments[-1])
+                tmp_max, tmp_min = _write3d(x_re_c, new_path + suffixb + suffixc , scale_pixel_value) 
                 min_val = min_val if min_val < tmp_min else tmp_min   
                 max_val = max_val if max_val > tmp_max else tmp_max  
                 #print(image.shape)
@@ -327,25 +335,56 @@ def load_im_from_mat(filename):
 
     return None
 
+def exists_or_mkdir(path, verbose=True):
+    """Check a folder by given name, if not exist, create the folder and return False,
+    if directory exists, return True. Copied from TensorLayer.files
+
+    Parameters
+    ----------
+    path : a string
+        A folder path.
+    verbose : boolean
+        If True, prints results, deaults is True
+
+    Returns
+    --------
+    True if folder exist, otherwise, returns False and create the folder
+
+    """
+    if not os.path.exists(path):
+        if verbose:
+            print("[*] creates %s ..." % path)
+        os.makedirs(path)
+        return False
+    else:
+        if verbose:
+            print("[!] %s exists ..." % path)
+        return True
+
+
 def save_mat(im, filename):
     """save the image as .mat file.
     """
     scipy.io.savemat(filename, mdict={'data' : im})
 
-def interpolate3d(img, factor=4, order=1):
+def interpolate3d(im, factor=4, order=1):
     """
     Params:
-        -img : [batch, depth, height, width, channels] or [depth, height, width, channels]
+        -im : [batch, depth, height, width, channels] or [depth, height, width, channels]
+        -order: int in the range [0~5], the order of the spline interpolation.
     """
     from scipy.ndimage.interpolation import zoom
-    if len(img.shape) == 5:
+    ndims = len(im.shape)
+    if ndims == 5:
         zoom_factor = [1,factor,factor,factor,1]
-    elif len(img.shape) == 4:
+    elif ndims == 4:
         zoom_factor = [factor,factor,factor,1]
+    elif ndims == 3:
+        zoom_factor = factor
     else:
-        raise Exception("interpolate3d : unsupported image dims : %d" % len(img.shape))
-
-    return zoom(img, zoom=zoom_factor, order=order)
+        raise Exception("interpolate3d : unsupported image dims : %d" % len(im.shape))
+    
+    return zoom(im, zoom=zoom_factor, order=order)
 
 
 '''

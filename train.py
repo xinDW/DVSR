@@ -1,16 +1,16 @@
 import os
 import time
 import re
+
 import tensorflow as tf
 import tensorlayer as tl
 import numpy as np
 import imageio 
 import matplotlib.pyplot as plt
 
-from tqdm import tqdm
-
-from model import res_dense_net, DBPN, resnet, unet3d, denoise_net, fusedSegNet, load_ckpt_partial
+from model import res_dense_net, DBPN, resnet, unet3d, unet_care, denoise_net, fusedSegNet, load_ckpt_partial
 from model.losses import l2_loss, edges_loss, img_gradient_loss, l1_loss
+from model.util import save_graph_as_pb, convert_graph_to_fp16
 from dataset import Dataset
 from utils import *
 from config import config
@@ -27,6 +27,7 @@ loss_fn = l2_loss if config.loss == 'mse' else l1_loss
 using_batch_norm = config.using_batch_norm 
 using_edge_loss = config.TRAIN.using_edge_loss
 using_grad_loss = config.TRAIN.using_grad_loss
+normalization   = config.normalization
 
 beta1 = config.TRAIN.beta1
 n_epoch = config.TRAIN.n_epoch
@@ -35,11 +36,13 @@ learning_rate_init = config.TRAIN.learning_rate_init
 decay_every = config.TRAIN.decay_every 
 learning_rate_decay = 0.1
 
-checkpoint_dir = config.TRAIN.ckpt_dir
-ckpt_saving_interval = config.TRAIN.ckpt_saving_interval
-test_saving_dir = config.TRAIN.test_saving_path
-valid_saving_dir = test_saving_dir + 'valid_otf/'
-log_dir = config.TRAIN.log_dir
+checkpoint_dir         = config.TRAIN.ckpt_dir
+ckpt_saving_interval   = config.TRAIN.ckpt_saving_interval
+test_saving_dir        = config.TRAIN.test_saving_path
+activations_saving_dir = os.path.join(test_saving_dir, 'activations')
+
+valid_saving_dir       = os.path.join(test_saving_dir, 'valid_otf')
+log_dir                = config.TRAIN.log_dir
 
 
 factor = []
@@ -66,11 +69,11 @@ class BaseTrainer:
             architecture of the stage1 sub-net. None if 1-stage is expected.
         -archi2: ['rdn', 'unet', 'dbpn']
             architecture of the stage2 sub-net. 
-        _visualize_features: if True, save all the feature maps of the test set into tiff
+        -visualize_features: if True, save the activations of all layers during testing.
     """
     def __init__(self, dataset, archi1='dbpn', archi2='rdn', visualize_features=False, pretrain=False):
         archi1 in [None, 'dbpn', 'denoise'] or _raise(ValueError('illegal argument archi1: %s' % archi1))
-        archi2 in ['rdn'] or _raise(ValueError('illegal argument archi2: %s' % archi2))
+        archi2 in ['rdn', 'unet', 'dbpn'] or _raise(ValueError('illegal argument archi2: %s' % archi2))
 
         self.archi1           = archi1
         self.archi2           = archi2
@@ -94,6 +97,7 @@ class BaseTrainer:
         self.plchdr_lr = tf.placeholder("float", [batch_size] + lr_size, name="LR")       
         self.plchdr_hr = tf.placeholder("float", [batch_size] + hr_size, name="HR")
 
+        self.output_node_name = 'dvsr_final_out'
             
     def _find_available_ckpt(self, end, sess):
         pass
@@ -168,28 +172,38 @@ class BaseTrainer:
         #             valid_lr_batch = self.valid_lr[idx : idx + batch_size]
         #             self._valid_on_the_fly(sess, epoch, idx, valid_lr_batch)
 
-    def _get_output_node_name(self, sess):
-        name = None
-        for op in sess.graph.get_operations():
-            if 'out' in op.name:
-                name = op.name
-        name or __raise(ValueError('ops with name "out" is not in the default graph'))
-        print('\noutput node found : %s\n' % name)
-        return name 
+    # def _get_output_node_name(self, sess):
+    #     name = None
+    #     for op in sess.graph.get_operations():
+    #         if 'out' in op.name:
+    #             name = op.name
+    #     name or __raise(ValueError('ops with name "out" is not in the default graph'))
+    #     print('\noutput node found : %s\n' % name)
+    #     return name 
 
     def _save_pb(self, sess):
-        if 'output_node' not in dir(self):
-            self.output_node = self._get_output_node_name(sess)
-
         pb_file = checkpoint_dir + '/best_model.pb'
-        save_graph_as_pb(sess=sess, output_node_names=self.output_node, output_graph_file=pb_file)
+        save_graph_as_pb(sess=sess, output_node_names=self.output_node_name, output_graph_file=pb_file)
 
+    def _save_half_precision_pb():
+        model_path = os.path.join(checkpoint_dir, 'best_model.pb')
+        save_path = "checkpoint/pb"
+        tl.files.exists_or_mkdir(checkpoint_dir, verbose=False)
+
+        name = "%s_half-precision.pb" % label
+        as_text = False
+        target_type = 'fp16'
+
+        input_name = "Placeholder"
+        output_names = [self.output_node_name] # "net_s2/out/Identity"
+        convert_graph_to_fp16(model_path, save_path, name, as_text=as_text, target_type=target_type, input_name=input_name, output_names=output_names)
+        
     def _adjust_learning_rate(self, epoch, sess):
         new_lr_decay = learning_rate_decay ** (epoch // decay_every)
         sess.run(tf.assign(self.learning_rate_var, learning_rate_init * new_lr_decay))
         print('\nlearning rate updated : %f\n' % (learning_rate_init * new_lr_decay))
 
-    def _visualize_layers(self, sess, final_layer, feed_dict):
+    def _visualize_layers(self, save_dir, sess, final_layer, feed_dict, verbose=False):
         """
         save all the feature maps (before the final_layer) into tif file.
         Params:
@@ -198,7 +212,8 @@ class BaseTrainer:
         
         fetches = {}
         for i, layer in enumerate(final_layer.all_layers):
-            print("  layer {:2}: {:40}  {:20}".format(i, str(layer.name), str(layer.get_shape())))
+            if verbose:
+                print("  layer {:2}: {:40}  {:20}".format(i, str(layer.name), str(layer.get_shape())))
             name = re.sub(':', '', str(layer.name))
             name = re.sub('/', '_', name)
             fetches.update({name : layer})
@@ -207,9 +222,9 @@ class BaseTrainer:
         layer_idx = 0
         
         for name, feat in features.items():
-            save_path = test_saving_dir + 'layers/%03d/' % layer_idx
-            tl.files.exists_or_mkdir(save_path)
-            filename = save_path +'{}.tif'.format(name)
+            save_path = os.path.join(save_dir, '%03d/' % layer_idx)
+            tl.files.exists_or_mkdir(save_path, verbose=False)
+            filename = os.path.join(save_path, '{}.tif'.format(name))
             write3d(feat, filename)
             layer_idx += 1
 
@@ -239,6 +254,7 @@ class BaseTrainer:
     def _record_avg_test_loss(self, epoch, sess):
         if 'min_test_loss' not in dir(self):
             self.min_test_loss = 1e10
+            self.best_epoch = 0
 
         test_loss = 0
         test_data_num = len(self.test_lr)
@@ -263,10 +279,11 @@ class BaseTrainer:
         
         if (test_loss < self.min_test_loss):
             self.min_test_loss = test_loss
+            self.best_epoch = epoch
             self._save_intermediate_ckpt(tag='best', sess=sess)
-            # self._save_pb(sess)
+            
 
-        print('avg = %.6f best = %.6f' % (test_loss, self.min_test_loss))
+        print('avg = %.6f best = %.6f @epoch%d' % (test_loss, self.min_test_loss, self.best_epoch))
         self.loss_test_plt.append([epoch, test_loss])
 
 
@@ -278,6 +295,7 @@ class BaseTrainer:
         #     print('add test loss : [%s] to summaries' % name)           
         #     test_summary_protbufs.append(tf.summary.scalar(name, loss))
         
+        tl.files.exists_or_mkdir(test_saving_dir)
         for idx in range(0, len(self.test_lr), batch_size):
             if idx + batch_size <= len(self.test_lr):
                 test_lr_batch = self.test_lr[idx : idx + batch_size]
@@ -295,8 +313,8 @@ class BaseTrainer:
                     self.test_loss_writer.add_summary(summary_t_loss, iter + local_iter)
                     
                     if self.visualize and idx == 0:
-                        self._visualize_layers(sess, self.interpolator, feed_test)
-                        self._visualize_layers(sess, self.resolver, feed_test)
+                        self._visualize_layers(save_dir=os.path.join(activations_saving_dir, 'interp'), sess=sess, final_layer=self.interpolator, feed_dict=feed_test)
+                        self._visualize_layers(save_dir=os.path.join(activations_saving_dir, 'resolv'), sess=sess, final_layer=self.resolver, feed_dict=feed_test)
                 else:
                     feed_test = {self.plchdr_lr : test_lr_batch, self.plchdr_hr : test_hr_batch}
                     out, summary_t_loss = sess.run([self.net.outputs, self.summary_op_test], feed_test)
@@ -305,7 +323,7 @@ class BaseTrainer:
                         write3d(out, test_saving_dir+'sr_test_epoch{}_{}.tif'.format(epoch, idx))
 
                     if self.visualize and idx == 0:
-                        self._visualize_layers(sess, self.net, feed_test)
+                        self._visualize_layers(save_dir=activations_saving_dir, sess=sess, final_layer=self.net, feed_dict=feed_test)
 
                     self.test_loss_writer.add_summary(summary_t_loss, iter + local_iter)
 
@@ -317,6 +335,8 @@ class BaseTrainer:
 
         write3d(self.test_lr[0:batch_size], test_saving_dir+'test_lr.tif')
         write3d(self.test_hr[0:batch_size], test_saving_dir+'test_hr.tif')
+        # write3d(self.test_lr, test_saving_dir+'test_lr.tif')
+        # write3d(self.test_hr, test_saving_dir+'test_hr.tif')
 
     def _get_valid_otf_data(self):
         if self.valid_on_the_fly:
@@ -328,8 +348,11 @@ class BaseTrainer:
         loss = np.asarray(self.loss_test_plt)
         plt.figure()
         plt.plot(loss[:, 0], loss[:, 1])
-        plt.show()
+
+        # pyplot.savefig() must be called before show() in order to save fig as images. 
         plt.savefig(test_saving_dir + 'test_loss.png', bbox_inches='tight')
+        plt.show()
+        
 
     def _save_history(self):
         from openpyxl import Workbook
@@ -340,6 +363,8 @@ class BaseTrainer:
 
         loss = self.loss_test_plt
         [ws.append(loss[i]) for i in range(len(loss))]
+        
+        tl.files.exists_or_mkdir(test_saving_dir)        
         wb.save(test_saving_dir + "%s.xlsx" % label)
 
 
@@ -349,6 +374,7 @@ class BaseTrainer:
         finally:
             self._save_history()
             self._plot_test_loss()
+            self._save_pb(self.sess)
 
     def _train(self, begin_epoch=0, test=True, verbose=True):
         
@@ -358,7 +384,7 @@ class BaseTrainer:
         sess.run(tf.global_variables_initializer())
         sess.run(tf.assign(self.learning_rate_var, learning_rate_init))
 
-        tl.files.exists_or_mkdir(checkpoint_dir)
+        tl.files.exists_or_mkdir(checkpoint_dir, verbose=False)
         
 
         training_dataset = self.dataset
@@ -369,7 +395,8 @@ class BaseTrainer:
         self._get_valid_otf_data()
         self._get_test_data()
         self._make_summaries(sess)
-        
+        self.sess = sess
+
         """Pre-train the resolver independently
         """
         if begin_epoch == 0 and self.pretrain:
@@ -401,7 +428,7 @@ class BaseTrainer:
 
             epoch += begin_epoch
 
-            if (cursor == 0):
+            if (cursor == 0 and epoch != 0):
                 print('')
                 self._record_avg_test_loss(epoch, sess)
 
@@ -425,30 +452,30 @@ class BaseTrainer:
                 self._save_intermediate_ckpt(epoch, sess)
                 if test:
                     self._add_test_summary(n_iters_passed, epoch, sess)
-
-            
-
-class Trainer(BaseTrainer):
+        
+class OneStageTrainer(BaseTrainer):
     """Trainer for common one-stage net
     """
-    def __init__(self, dataset, architecture='RDN', visualize_features=False):
-        super(Trainer, self).__init__(dataset, None, architecture, visualize_features)
+    def __init__(self, dataset, architecture='RDN', visualize_features=True):
+        super(OneStageTrainer, self).__init__(dataset, None, architecture, visualize_features)
     def build_graph(self):
-        super(Trainer, self).build_graph()
+        super(OneStageTrainer, self).build_graph()
         self.archi = self.archi2
 
         with tf.device('/gpu:1'):
             
             variable_tag = '1stage_%s' % self.archi
-            if self.archi is 'rdn':
+            if self.archi == 'rdn':
                 net = res_dense_net(self.plchdr_lr, factor=config.factor, reuse=False, bn=using_batch_norm, name=variable_tag)
                 net_test = res_dense_net(self.plchdr_lr, factor=config.factor, reuse=True, bn=using_batch_norm, name=variable_tag)   
 
-            elif self.archi is 'unet':
+            elif self.archi == 'unet':
                 self.plchdr_lr = tf.placeholder("float", [batch_size] + hr_size, name="LR")    
-                net = unet3d(self.plchdr_lr, upscale=False, reuse=False, is_train=True, name=variable_tag)
-                net_test = unet3d(self.plchdr_lr, upscale=False, reuse=True, is_train=False, name=variable_tag)
-            elif self.archi is 'dbpn':
+                # net = unet3d(self.plchdr_lr, upscale=False, reuse=False, name=variable_tag)
+                # net_test = unet3d(self.plchdr_lr, upscale=False, reuse=True, name=variable_tag)
+                net = unet_care(self.plchdr_lr, reuse=False, name=variable_tag)
+                net_test = unet_care(self.plchdr_lr, reuse=True, name=variable_tag)
+            elif self.archi == 'dbpn':
                 net = DBPN(self.plchdr_lr, upscale=True, factor=config.factor, reuse=False, name=variable_tag)
                 net_test = DBPN(self.plchdr_lr, upscale=True, factor=config.factor, reuse=True, name=variable_tag)
             else:
@@ -458,8 +485,9 @@ class Trainer(BaseTrainer):
 
         #net_test = DBPN(self.plchdr_lr, upscale=True, reuse=True, name=variable_tag) 
         
-
+        net.print_params(details=False)
         self.net = net
+        op_out   = tf.identity(net.outputs, self.output_node_name)
         net_vars = tl.layers.get_variables_with_name(variable_tag, train_only=True, printable=False)
 
         ln_loss = loss_fn(self.plchdr_hr, net.outputs)
@@ -482,14 +510,14 @@ class Trainer(BaseTrainer):
             self.loss.update({'grad_loss' : loss_grad})
             self.optim.update({'g_optim' : g_optim})
 
-class SegmentedTrainer(BaseTrainer):
+class DualStageTrainer(BaseTrainer):
     """Trainer for two-stage net 
     """
     def __init__(self, dataset, archi1, archi2, visualize_features=False):
-        super(SegmentedTrainer, self).__init__(dataset, archi1, archi2, visualize_features)
+        super(DualStageTrainer, self).__init__(dataset, archi1, archi2, visualize_features)
 
     def build_graph(self):  
-        super(SegmentedTrainer, self).build_graph()
+        super(DualStageTrainer, self).build_graph()
         variable_tag_res = 'Resolve'
         variable_tag_interp = 'Interp'
 
@@ -519,9 +547,9 @@ class SegmentedTrainer(BaseTrainer):
             else:
                 _raise(ValueError())   
 
-        self.resolver = net_stage1
+        self.resolver     = net_stage1
         self.interpolator = net_stage2
-
+        op_out            = tf.identity(net_stage2.outputs, self.output_node_name)
             
         net_stage1.print_params(details=False)
         net_stage2.print_params(details=False)
@@ -537,6 +565,8 @@ class SegmentedTrainer(BaseTrainer):
 
         loss_training = loss_training_n1 + loss_training_n2
         loss_test = loss_test_n2 + loss_test_n1
+        # loss_training = loss_training_n2
+        # loss_test = loss_test_n2
 
         #n1_optim = tf.train.AdamOptimizer(self.learning_rate_var, beta1=beta1).minimize(loss_training, var_list=vars_n1)
         #n2_optim = tf.train.AdamOptimizer(self.learning_rate_var, beta1=beta1).minimize(loss_training_n2, var_list=vars_n2)
@@ -578,11 +608,11 @@ class SegmentedTrainer(BaseTrainer):
         return begin  
 
     def _get_test_data(self):
-        super(SegmentedTrainer, self)._get_test_data()        
+        super(DualStageTrainer, self)._get_test_data()        
         write3d(self.test_mr[0 : batch_size], test_saving_dir+'test_mr.tif')
 
 class FusedSegTrainer(BaseTrainer):
-    """Trainer for a fused 2-stage net, used after SegmentedTrainer
+    """Trainer for a fused 2-stage net, used after DualStageTrainer
     """
     def __init__(self, dataset, architecture='fused', visualize_features=False):
         super(FusedSegTrainer, self).__init__(dataset, architecture, visualize_features)
@@ -637,8 +667,6 @@ class FusedSegTrainer(BaseTrainer):
             #return self._find_available_ckpt(n_epoch, sess)
             return 0
     
-
-
    
 if __name__ == '__main__':
     import argparse
@@ -657,7 +685,7 @@ if __name__ == '__main__':
     if test_data_dir is not None:
         test_lr_path = test_data_dir + 'lr/'
         test_hr_path = test_data_dir + 'hr/'
-        test_mr_path = test_data_dir +  'mr/'
+        test_mr_path = test_data_dir + 'mr/'
     else:
         test_lr_path = None
         test_hr_path = None
@@ -668,26 +696,26 @@ if __name__ == '__main__':
     transform = [interpolate3d, None] if config.archi2 == 'unet' else None
     lr_size   = hr_size if config.archi2 == 'unet' else lr_size
     dataset = Dataset(
-        lr_size       =lr_size, 
-        hr_size       =hr_size, 
+        lr_size       = lr_size, 
+        hr_size       = hr_size, 
         train_lr_path = train_lr_path,
         train_hr_path = train_hr_path,
-        test_lr_path  =test_lr_path,  
-        test_hr_path  =test_hr_path,
-        mr_size       =mr_size,
-        train_mr_path =train_mr_path,
-        test_mr_path  =test_mr_path,
-        valid_lr_path =valid_lr_path,
-        dtype         =np.float32,
+        test_lr_path  = test_lr_path,  
+        test_hr_path  = test_hr_path,
+        mr_size       = mr_size,
+        train_mr_path = train_mr_path,
+        test_mr_path  = test_mr_path,
+        valid_lr_path = valid_lr_path,
+        dtype         = np.float32,
         transforms    = transform, 
-        factor        =config.factor
+        factor        = config.factor
     )
 
     if config.archi1 is not None:
         # trainer = FusedSegTrainer(dataset, architecture=config.archi)
-        trainer = SegmentedTrainer(dataset, archi1=config.archi1, archi2=config.archi2)
+        trainer = DualStageTrainer(dataset, archi1=config.archi1, archi2=config.archi2, visualize_features=True)
     else:
-        trainer = Trainer(dataset, architecture=config.archi2)
+        trainer = OneStageTrainer(dataset, architecture=config.archi2)
         
     trainer.build_graph()
     trainer.train(begin_epoch=begin_epoch, test=True, verbose=True)

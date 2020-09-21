@@ -1,12 +1,13 @@
 import tensorflow as tf
 import tensorlayer as tl
 import numpy as np
-from tensorlayer.layers import Layer, Conv3dLayer, DeConv3dLayer, Conv2dLayer, DeConv2dLayer, ConcatLayer, BatchNormLayer, MaxPool3d
+from tensorlayer.layers import Layer, Conv3dLayer, DeConv3dLayer, Conv2dLayer, DeConv2dLayer, ConcatLayer, ElementwiseLayer, BatchNormLayer, MaxPool3d
 
 __all__ = ['conv3d',
     'conv3d_transpose',
     'upscale',
     'concat',
+    'add',
     'batch_norm',
     'max_pool3d',
     'prelu',
@@ -15,9 +16,13 @@ __all__ = ['conv3d',
     'ReluLayer'
 ]
 
-w_init = tf.random_normal_initializer(stddev=0.02)
-#b_init = tf.constant_initializer(value=0.0)
-b_init=None
+# w_init = tf.random_normal_initializer(stddev=0.02)
+
+# b_init = tf.constant_initializer(value=0.0)
+w_init = tf.glorot_normal_initializer
+b_init = None
+# b_init = tf.random_normal_initializer(1., 0.02)
+
 g_init = tf.random_normal_initializer(1., 0.02)
 
 def conv3d_transpose(input, out_channels, filter_size, stride, act=None, padding='SAME', name='conv3d_transpose' ):
@@ -78,13 +83,15 @@ def conv3d2(input, out_channels, filter_size=3, stride=1, padding='SAME', name='
 def upscale(layer, scale=2, only_z=False, name='upscale'):
     return SubVoxelConv(layer, scale=scale, only_z=only_z, n_out_channel=None, act=tf.identity, name=name)
     
-def concat(layer, concat_dim=-1, name='concat'):
-    return ConcatLayer(layer, concat_dim=concat_dim, name=name)        
+def concat(layers, concat_dim=-1, name='concat'):
+    return ConcatLayer(layers, concat_dim=concat_dim, name=name)        
+def add(layers):
+    return ElementwiseLayer(layers, combine_fn = tf.math.add)
 
 def batch_norm(layer, act=tf.identity, is_train=True, gamma_init=g_init, name='bn'):  
     return BatchNormLayer(layer, act=act, is_train=is_train, gamma_init=gamma_init, name=name)
 
-def max_pool3d(x, filter_size=3, stride=2, padding='SAME', name='maxpool3d'):
+def max_pool3d(x, filter_size=2, stride=2, padding='SAME', name='maxpool3d'):
     filter_size=[filter_size,filter_size,filter_size]
     strides=[stride,stride,stride]
     return MaxPool3d(x, filter_size=filter_size, strides=strides, padding=padding, name=name)
@@ -123,7 +130,56 @@ class ReluLayer(Layer):
         self.all_params = list(layer.all_params)
         self.all_drop = dict(layer.all_drop)
         self.all_layers.extend( [self.outputs] )
-        
+
+class UpSampling3dLayer(Layer):
+    """3-D version of tl.layers.UpSampling2dLayer()
+    Parameters
+    -----------
+    layer : a layer class with 5-D Tensor of shape [batch, depth, height, width, channels].
+    size : a tuple of int or float.
+        (depth, height, width) scale factor or new size of depth, height and width.
+    is_scale : boolean, if True (default), size is scale factor, otherwise, size is number of pixels of depth, height and width.
+    method : 0, 1, 2, 3. ResizeMethod. Defaults to ResizeMethod.BILINEAR.
+        - ResizeMethod.BILINEAR, Bilinear interpolation.
+        - ResizeMethod.NEAREST_NEIGHBOR, Nearest neighbor interpolation.
+        - ResizeMethod.BICUBIC, Bicubic interpolation.
+        - ResizeMethod.AREA, Area interpolation.
+    align_corners : bool. If true, exactly align all 4 corners of the input and output. Defaults to false.
+    name : a string or None
+        An optional name to attach to this layer.
+    """
+    def __init__(
+        self,
+        layer = None,
+        size = [],
+        is_scale = True,
+        method = 0,
+        align_corners = False,
+        name ='upsample3d_layer',
+    ):
+        Layer.__init__(self, name=name)
+        self.inputs = layer.outputs
+            
+        if len(self.inputs.get_shape()) == 5:
+            if is_scale:
+                size_d = size[0] * int(self.inputs.get_shape()[1])
+                size_h = size[1] * int(self.inputs.get_shape()[2])
+                size_w = size[2] * int(self.inputs.get_shape()[3])
+                size = [int(size_h), int(size_h), int(size_w)]
+        else:
+            raise Exception("Donot support shape %s" % self.inputs.get_shape())
+        print("  UpSampling3dLayer %s: is_scale:%s size:%s method:%d align_corners:%s" %
+                                (name, is_scale, size, method, align_corners))
+        with tf.variable_scope(name) as vs:
+            self.outputs = tf.image.resize_images(self.inputs, size=size, method=method, align_corners=align_corners)
+            
+
+        self.all_layers = list(layer.all_layers)
+        self.all_params = list(layer.all_params)
+        self.all_drop = dict(layer.all_drop)
+        self.all_layers.extend( [self.outputs] )
+
+
 def _interpolateXY(data, ratio, nchannels_out=1):
    """
    interpolate height and width 
@@ -143,10 +199,10 @@ def _interpolateXY(data, ratio, nchannels_out=1):
    
 def SubVoxelConv(net, scale=2, only_z=False, n_out_channel=None, act=tf.identity, name='subpixel_conv3d'):    
     
-    """
+    """3-D version of tl.layers.SubpixelConv2d.
     Inflate pixles in [channels] into [depth height width] to interpola the 3-d image 
     Parameters
-    net : [batch depth height width channels]
+        net : [batch depth height width channels]
     
     """
     scope_name = tf.get_variable_scope().name
