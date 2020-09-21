@@ -18,15 +18,12 @@ The inference process has been tested with:
  * Nvidia GeForce RTX 2080 Ti
 
 
-The inference of the example data `example_data/brain/LR/cerebellum.tif` took 12s and 350s with and without GPU promotion in the tested platform.
-
-
 ## Install
 
 1. Install python 3.6 
 2. (Optional) If your computer has a CUDA-enabled GPU, install the CUDA and CUDNN of the proper version.
-3. Download the DSP_Demo.zip and unpack it. The directory tree should be: 
-
+3. Download the DSP_Demo.zip and unpack it. 
+4. Download the example data from [dvsr-example-data](https://drive.google.com/file/d/1UHb0RiLCC1uMiI_nMh3YygV0PZ2Ozc94/view?usp=sharing), unpack and put them under the directory `./data/example-data/`. The directory tree should be: 
 ```  
 DSP-Demo   
     .
@@ -35,10 +32,13 @@ DSP-Demo
     ├── eval.py
     ├── model
     ├── requirements.txt
+    ├── train.py
     ├── utils.py
-    ├── example_data
-        └── brain
-        └── cell
+    ├── data
+        └── example_data
+            └── tubulin
+                └── train
+                └── inference
 ```
 
 4. Install the dependencies using pip:
@@ -59,11 +59,12 @@ The installation takes about 5 minutes in the tested platform. The time could be
 
 ### Train
 
-We provide a group of training data of micro-tubulins for the users to hand on quickly. Run:
+We provide a group of training data of micro-tubulins ( see `./data/example_date/train/tubulin` ) for the users to hand on quickly. Run:
 
 ```
 python train.py
 ```
+to train a DSP-Net on the privided dataset. The trained parameters will be saved in `.npz` fromat under `./checkpoint` directory.
 
 To train the DSP-Net on your own data:
 1. Prepare your dataset that contains HRs, LRs, and MRs in three seperate folders. We highly recommend that the corresponding HR, LR and MR having the same file name.
@@ -112,7 +113,7 @@ To train the DSP-Net on your own data:
     |       | mae | use the mean-absolute-error as the loss function|
 
 
-4. Run the training by
+4. Run the training:
     ```
     python train.py
     ```
@@ -121,32 +122,12 @@ To train the DSP-Net on your own data:
 
 ### Inference
 
-This toturial contains example data of mouse brains and cells (see example_data/):
-```
-.
-├── example_data
-    └── brain
-        └── LR
-            └── cerebellum_3.2x_bessel.tif                (3.2x bessel-sheet cerebellum data)
-            └── vessel_3.2x_bessel_cross-sample.tif       (3.2x bessel-sheet brain vessel data, for cross-sample application )
-            └── cortex_3.2x_confocal_cross-mode.tif       (3.2x confocal brain data of the cortex region , for cross-mode application )
-        └── expected_outputs
-    └── cell
-        └── LR
-            └── microtube_60x_bessel.tif                  (60x bessel-beam images of the microtube of the U2OS cells)
-            └── ER_60x_bessel_cross-sample.tif            (60x bessel-beam images of the endoplasmic reticulum of the cell, for cross-sample application)
-        └── expected_outputs
-
-```
-
-The expected outputs by the DSP-Net of each input LR can be found in the corresponding 'expected_outputs' directory (due to the size limit, only MIPs of expected outputs are provided. 
-
 To run the DSP-inference, use :
 
 ```
 python eval.py 
 ```
-The 3-D tiff images under the directory specified by `valid_lr_img_path` in `your_config.py` will be loaded and processed, using the model corresponding to the `label` in `your_config.py`.
+The 3-D tiff images under the directory specified by `valid_lr_img_path` in `your_config.py` will be loaded and processed, using the model corresponding to the `label` in `your_config.py`. We provide another groud of 3-D images of tubulins (see `./data/example_data/tubulin/inference/`) for inference. 
 
 Currently only 3-D tiff file in 8-bit and 16-bit are supported. The outputs will be saved in a subfolder named by the label under the input image directory.
 
