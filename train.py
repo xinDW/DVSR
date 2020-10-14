@@ -72,7 +72,7 @@ class BaseTrainer:
         -visualize_features: if True, save the activations of all layers during testing.
     """
     def __init__(self, dataset, archi1='dbpn', archi2='rdn', visualize_features=False, pretrain=False):
-        archi1 in [None, 'dbpn', 'denoise'] or _raise(ValueError('illegal argument archi1: %s' % archi1))
+        archi1 in [None, 'dbpn', 'denoise', 'unet'] or _raise(ValueError('illegal argument archi1: %s' % archi1))
         archi2 in ['rdn', 'unet', 'dbpn'] or _raise(ValueError('illegal argument archi2: %s' % archi2))
 
         self.archi1           = archi1
@@ -258,21 +258,20 @@ class BaseTrainer:
 
         test_loss = 0
         test_data_num = len(self.test_lr)
-        for idx in range(0, test_data_num, batch_size):
-            if idx + batch_size <= test_data_num:
-                test_lr_batch = self.test_lr[idx : idx + batch_size]
-                test_hr_batch = self.test_hr[idx : idx + batch_size]
-                if (self.archi1 is not None): 
-                    test_mr_batch = self.test_mr[idx : idx + batch_size]
-                    feed_test = {self.plchdr_lr : test_lr_batch, self.plchdr_hr : test_hr_batch, self.plchdr_mr : test_mr_batch}
-                    name = 'loss_test_n2'
-                else:
-                    feed_test = {self.plchdr_lr : test_lr_batch, self.plchdr_hr : test_hr_batch}
-                    name = 'ln_loss_test'
-                
-                test_loss_batch = sess.run(self.loss_test, feed_test)
-                test_loss += test_loss_batch[name]
-                print('\rvalidation [% 2d/% 2d] loss = %.6f   ' % (idx, test_data_num, test_loss_batch[name]), end='')
+        for idx in range(0, test_data_num - batch_size + 1, batch_size):
+            test_lr_batch = self.test_lr[idx : idx + batch_size]
+            test_hr_batch = self.test_hr[idx : idx + batch_size]
+            if (self.archi1 is not None): 
+                test_mr_batch = self.test_mr[idx : idx + batch_size]
+                feed_test = {self.plchdr_lr : test_lr_batch, self.plchdr_hr : test_hr_batch, self.plchdr_mr : test_mr_batch}
+                name = 'loss_test_n2'
+            else:
+                feed_test = {self.plchdr_lr : test_lr_batch, self.plchdr_hr : test_hr_batch}
+                name = 'ln_loss_test'
+            
+            test_loss_batch = sess.run(self.loss_test, feed_test)
+            test_loss += test_loss_batch[name]
+            print('\rvalidation [% 2d/% 2d] loss = %.6f   ' % (idx, test_data_num, test_loss_batch[name]), end='')
 
 
         test_loss /= (len(self.test_lr) // batch_size)       
@@ -537,6 +536,9 @@ class DualStageTrainer(BaseTrainer):
             elif self.archi1 == 'denoise':
                 net_stage1      = denoise_net(self.plchdr_lr, reuse=False, name=variable_tag_res)
                 net_stage1_test = denoise_net(self.plchdr_lr, reuse=True, name=variable_tag_res)
+            elif self.archi1 == 'unet':
+                net_stage1      = unet3d(self.plchdr_lr, reuse=False, name=variable_tag_res)
+                net_stage1_test = unet3d(self.plchdr_lr, reuse=True, name=variable_tag_res)
             else:
                 _raise(ValueError())   
 

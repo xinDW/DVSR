@@ -92,6 +92,8 @@ def build_model_and_load_npz(epoch, use_cpu=False, save_pb=False):
                 resolver = DBPN(LR, upscale=False, name="net_s1")
             elif archi1 =='denoise': 
                 resolver = denoise_net(LR, name="net_s1")
+            elif archi1 =='unet': 
+                resolver = unet3d(LR, name="net_s1")
             else:
                 _raise(ValueError())
             
@@ -230,9 +232,9 @@ def evaluate_whole(epoch, load_graph_from_pb=False, half_precision_infer=False, 
                 slice_save_dir   = os.path.join(save_dir, 'SR-' + short_name)
                 exists_or_mkdir(slice_save_dir)
 
-                for d, layer in enumerate(sr):
+                for d, slice_ in enumerate(sr):
                     name = os.path.join(slice_save_dir, '%05d.tif' % (d + 1) )
-                    imageio.imwrite(name, layer) 
+                    imageio.imwrite(name, slice_) 
             
                 
     model.recycle()
@@ -259,7 +261,7 @@ if __name__ == '__main__':
     parser.add_argument("-p", "--save_pb", help="save the loaded graph as a half-precision pb file",
                         action="store_true") 
 
-    parser.add_argument("-l", "--layer", help="save activations of each layer",
+    parser.add_argument("-a", "--activations", help="save activations of each layer",
                         action="store_true") 
 
     # parser.add_argument("--stage1", help="run stage1 only",
@@ -269,4 +271,10 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    evaluate_whole(epoch=args.ckpt, load_graph_from_pb=args.pb, half_precision_infer=args.half_precision, use_cpu=args.cpu, large_volume=args.large, save_pb=args.save_pb, save_activations=args.layer)
+    evaluate_whole(epoch=args.ckpt, 
+                    load_graph_from_pb=args.pb, 
+                    half_precision_infer=args.half_precision, 
+                    use_cpu=args.cpu, 
+                    large_volume=args.large, 
+                    save_pb=args.save_pb, 
+                    save_activations=args.activations)
