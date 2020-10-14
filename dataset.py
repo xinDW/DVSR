@@ -143,7 +143,7 @@ class Dataset:
 
                             if not keep_all:
                                 if keep_list is None:
-                                    if (np.max(block) > max_val * 0.7):
+                                    if (np.max(block) > max_val * 0.2):
                                         blocks.append(block)
                                         idx_saved.append(block_idx)
                                 else:
@@ -161,7 +161,7 @@ class Dataset:
 
 
 
-        self._check_inputs()
+        # self._check_inputs()
         self.training_data_hr, valid_indices = _get_im_blocks(self.train_hr_path, 
                                                             self.hr_size, 
                                                             transform=self.transforms[1], keep_all=self.keep_all_blocks)
@@ -219,8 +219,6 @@ class Dataset:
         self.batch_size = batch_size
         self.n_epochs = n_epochs
 
-        self.cursor = self.test_data_split
-        self.epoch = 0
         self.prepared = True
         
         print('HR dataset: %s\nLR dataset: %s' % (str(self.training_data_hr.shape), str(self.training_data_lr.shape)))
@@ -240,30 +238,19 @@ class Dataset:
         #return self.training_data_hr[0 : self.batch_size], self.training_data_lr[0 : self.batch_size], self.training_data_mr[0 : self.batch_size]
         self.__check_prepared()
         
+        bt = self.batch_size
         if self.hasTest:
-            if self.hasMR:
-                return self.test_data_hr, self.test_data_lr, self.test_data_mr
-            else:
-                return self.test_data_hr, self.test_data_lr, None
+            for idx in range(0, len(self.test_data_hr) - bt + 1, bt):
+                if self.hasMR:
+                    yield self.test_data_hr[idx : idx + bt], self.test_data_lr[idx : idx + bt], self.test_data_mr[idx : idx + bt]
+                else:
+                    yield self.test_data_hr[idx : idx + bt], self.test_data_lr[idx : idx + bt], None
         else:
-            n = self.test_data_split
-            if self.hasMR:
-                return self.training_data_hr[0 : n], self.training_data_lr[0 : n], self.training_data_mr[0 : n]
-            else:
-                return self.training_data_hr[0 : n], self.training_data_lr[0 : n], None
-
-    def test_data_iter(self, epoch):
-        if self.hasTest:
-            if self.hasMR:
-                return self.test_data_hr, self.test_data_lr, self.test_data_mr
-            else:
-                return self.test_data_hr, self.test_data_lr, None
-        else:
-            n = self.test_data_split
-            if self.hasMR:
-                return self.training_data_hr[0 : n], self.training_data_lr[0 : n], self.training_data_mr[0 : n]
-            else:
-                return self.training_data_hr[0 : n], self.training_data_lr[0 : n], None
+            for idx in range(0, self.test_data_split - bt + 1, bt):
+                if self.hasMR:
+                    yield self.training_data_hr[idx : idx + bt], self.training_data_lr[idx : idx + bt], self.training_data_mr[idx : idx + bt]
+                else:
+                    yield self.training_data_hr[idx : idx + bt], self.training_data_lr[idx : idx + bt], None
 
     def for_valid(self):
         self.__check_prepared()
@@ -273,54 +260,22 @@ class Dataset:
         else:
             raise Exception ('validation set not designated')
 
-    def hasNext(self):
-        return True if self.epoch <= self.n_epochs else False
              
-    def iter(self):
+    def for_training(self):
        
-        n_t = self.test_data_split
-        if self.epoch <= self.n_epochs:
-            if self.cursor + self.batch_size > self.training_pair_num:
-                self.epoch += 1
-                self.cursor = n_t
+        nt = self.test_data_split
+        bt = self.batch_size
 
-            idx = self.cursor
-            bth = self.batch_size
-
-            self.cursor += bth
-            idx_disp = idx - n_t # begin with 0
-            if self.hasMR:
-                return self.training_data_hr[idx : idx + bth], self.training_data_lr[idx : idx + bth], self.training_data_mr[idx : idx + bth], idx_disp, self.epoch
-            else :
-                return self.training_data_hr[idx : idx + bth], self.training_data_lr[idx : idx + bth], None, idx_disp, self.epoch
-
-        raise Exception('epoch idx out of bounds : %d / %d' %(self.epoch, self.n_epochs))
+        for epoch in range(1, self.n_epochs + 1):
+            for idx in range(nt, self.training_pair_num - bt + 1, bt):
+                idx_disp = idx - nt + 1 # begin from 1
+                if self.hasMR:
+                    yield self.training_data_hr[idx : idx + bt], self.training_data_lr[idx : idx + bt], self.training_data_mr[idx : idx + bt], idx_disp, epoch
+                else :
+                    yield self.training_data_hr[idx : idx + bt], self.training_data_lr[idx : idx + bt], None, idx_disp, epoch
 
     def test_pair_nums(self):
         return (self.test_data_lr.shape[0] if self.hasTest else self.test_data_split)
 
-    def reset(self, n_epochs):
-        self.n_epochs = n_epochs
-        self.cursor = self.test_data_split
-        self.epoch = 0
 
-    '''
-    def for_training(self, sess):
-        if self.use_tf_data_api is False:
-            raise Exception("for_training() can only be called when use_tf_data_api is True")
-
-        self.plchdr_hr_train = tf.placeholder(self.dtype, shape=self.training_data_hr.shape, name='train_hr')
-        self.plchdr_lr_train = tf.placeholder(self.dtype, shape=self.training_data_lr.shape, name='train_lr')
-        self.plchdr_mr_train = tf.placeholder(self.dtype, shape=self.training_data_mr.shape, name='train_mr')
-        self.plchdr_hr_test = tf.placeholder(self.dtype, shape=self.training_data_hr.shape, name='train_hr')
-        self.plchdr_lr_test = tf.placeholder(self.dtype, shape=self.training_data_lr.shape, name='train_lr')
-        self.plchdr_mr_test = tf.placeholder(self.dtype, shape=self.training_data_mr.shape, name='train_mr')  
-
-        dataset = tf.data.Dataset().from_tensor_slices((self.plchdr_hr_train, self.plchdr_lr_train, self.plchdr_mr_train))
-        #dataset = dataset.batch(self.batch_size)
-        dataset = dataset.apply(tf.contrib.data.batch_and_drop_remainder(self.batch_size))
-        iterator = tf.data.Iterator.from_structure(dataset.output_types, dataset.output_shapes)
-        next = iterator.get_next()
-        sess.run(iterator.make_initializer(dataset), feed_dict={self.plchdr_hr_train : self.training_data_hr, self.plchdr_lr_train : self.training_data_lr, self.plchdr_mr_train : self.training_data_mr})
-        return next
-    '''
+    
