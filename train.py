@@ -8,7 +8,7 @@ import numpy as np
 import imageio 
 import matplotlib.pyplot as plt
 
-from model import res_dense_net, DBPN, resnet, unet3d, unet_care, denoise_net, fusedSegNet, load_ckpt_partial
+from model import res_dense_net, DBPN, unet3d, unet_care, denoise_net
 from model.losses import l2_loss, edges_loss, img_gradient_loss, l1_loss
 from model.util import save_graph_as_pb, convert_graph_to_fp16
 from dataset import Dataset
@@ -121,7 +121,7 @@ class BaseTrainer:
                             return file
                     else:
                         return file
-            return None
+            return None 
 
     def _load_designated_ckpt(self, begin_epoch, sess):
         
@@ -257,12 +257,10 @@ class BaseTrainer:
             self.best_epoch = 0
 
         test_loss = 0
-        test_data_num = len(self.test_lr)
-        for idx in range(0, test_data_num - batch_size + 1, batch_size):
-            test_lr_batch = self.test_lr[idx : idx + batch_size]
-            test_hr_batch = self.test_hr[idx : idx + batch_size]
+        n_test = 0
+        for test_hr_batch, test_lr_batch, test_mr_batch in self.dataset.for_test():
+    
             if (self.archi1 is not None): 
-                test_mr_batch = self.test_mr[idx : idx + batch_size]
                 feed_test = {self.plchdr_lr : test_lr_batch, self.plchdr_hr : test_hr_batch, self.plchdr_mr : test_mr_batch}
                 name = 'loss_test_n2'
             else:
@@ -271,10 +269,9 @@ class BaseTrainer:
             
             test_loss_batch = sess.run(self.loss_test, feed_test)
             test_loss += test_loss_batch[name]
-            print('\rvalidation [% 2d/% 2d] loss = %.6f   ' % (idx, test_data_num, test_loss_batch[name]), end='')
+            n_test += 1
 
-
-        test_loss /= (len(self.test_lr) // batch_size)       
+        test_loss /= n_test     
         
         if (test_loss < self.min_test_loss):
             self.min_test_loss = test_loss
@@ -282,7 +279,7 @@ class BaseTrainer:
             self._save_intermediate_ckpt(tag='best', sess=sess)
             
 
-        print('avg = %.6f best = %.6f @epoch%d' % (test_loss, self.min_test_loss, self.best_epoch))
+        print('testing: avg = %.6f best = %.6f @epoch%d' % (test_loss, self.min_test_loss, self.best_epoch))
         self.loss_test_plt.append([epoch, test_loss])
 
 
@@ -295,47 +292,44 @@ class BaseTrainer:
         #     test_summary_protbufs.append(tf.summary.scalar(name, loss))
         
         tl.files.exists_or_mkdir(test_saving_dir)
-        for idx in range(0, len(self.test_lr), batch_size):
-            if idx + batch_size <= len(self.test_lr):
-                test_lr_batch = self.test_lr[idx : idx + batch_size]
-                test_hr_batch = self.test_hr[idx : idx + batch_size]
-                if (self.archi1 is not None): 
-                    test_mr_batch = self.test_mr[idx : idx + batch_size]
 
-                    feed_test = {self.plchdr_lr : test_lr_batch, self.plchdr_hr : test_hr_batch, self.plchdr_mr : test_mr_batch}
-                    out_resolver, out_interp, summary_t_loss = sess.run([self.resolver.outputs, self.interpolator.outputs, self.summary_op_test], feed_test)
-                    
-                    if idx == 0:
-                        write3d(out_resolver, test_saving_dir+'mr_test_epoch{}_{}.tif'.format(epoch, idx))
-                        write3d(out_interp, test_saving_dir+'sr_test_epoch{}_{}.tif'.format(epoch, idx))
+        for test_hr_batch, test_lr_batch, test_mr_batch in self.dataset.for_test():
+        
+            if (self.archi1 is not None): 
 
-                    self.test_loss_writer.add_summary(summary_t_loss, iter + local_iter)
-                    
-                    if self.visualize and idx == 0:
-                        self._visualize_layers(save_dir=os.path.join(activations_saving_dir, 'interp'), sess=sess, final_layer=self.interpolator, feed_dict=feed_test)
-                        self._visualize_layers(save_dir=os.path.join(activations_saving_dir, 'resolv'), sess=sess, final_layer=self.resolver, feed_dict=feed_test)
-                else:
-                    feed_test = {self.plchdr_lr : test_lr_batch, self.plchdr_hr : test_hr_batch}
-                    out, summary_t_loss = sess.run([self.net.outputs, self.summary_op_test], feed_test)
+                feed_test = {self.plchdr_lr : test_lr_batch, self.plchdr_hr : test_hr_batch, self.plchdr_mr : test_mr_batch}
+                out_resolver, out_interp, summary_t_loss = sess.run([self.resolver.outputs, self.interpolator.outputs, self.summary_op_test], feed_test)
+                
+                if local_iter == 0:
+                    write3d(out_resolver, test_saving_dir+'test_mr_epoch{}.tif'.format(epoch))
+                    write3d(out_interp, test_saving_dir+'test_sr_epoch{}.tif'.format(epoch))
 
-                    if idx == 0:
-                        write3d(out, test_saving_dir+'sr_test_epoch{}_{}.tif'.format(epoch, idx))
+                self.test_loss_writer.add_summary(summary_t_loss, iter + local_iter)
+                
+                if self.visualize and local_iter == 0:
+                    self._visualize_layers(save_dir=os.path.join(activations_saving_dir, 'interp'), sess=sess, final_layer=self.interpolator, feed_dict=feed_test)
+                    self._visualize_layers(save_dir=os.path.join(activations_saving_dir, 'resolv'), sess=sess, final_layer=self.resolver, feed_dict=feed_test)
+            else:
+                feed_test = {self.plchdr_lr : test_lr_batch, self.plchdr_hr : test_hr_batch}
+                out, summary_t_loss = sess.run([self.net.outputs, self.summary_op_test], feed_test)
 
-                    if self.visualize and idx == 0:
-                        self._visualize_layers(save_dir=activations_saving_dir, sess=sess, final_layer=self.net, feed_dict=feed_test)
+                if local_iter == 0:
+                    write3d(out, test_saving_dir+'sr_test_epoch{}.tif'.format(epoch))
 
-                    self.test_loss_writer.add_summary(summary_t_loss, iter + local_iter)
+                if self.visualize and local_iter == 0:
+                    self._visualize_layers(save_dir=activations_saving_dir, sess=sess, final_layer=self.net, feed_dict=feed_test)
 
-                local_iter += 1
+                self.test_loss_writer.add_summary(summary_t_loss, iter + local_iter)
+
+            local_iter += 1
 
     def _get_test_data(self):
         tl.files.exists_or_mkdir(test_saving_dir)
-        self.test_hr, self.test_lr, self.test_mr = self.dataset.for_test()
-
-        write3d(self.test_lr[0:batch_size], test_saving_dir+'test_lr.tif')
-        write3d(self.test_hr[0:batch_size], test_saving_dir+'test_hr.tif')
-        # write3d(self.test_lr, test_saving_dir+'test_lr.tif')
-        # write3d(self.test_hr, test_saving_dir+'test_hr.tif')
+        
+        for test_hr, test_lr, test_mr in self.dataset.for_test():
+            write3d(test_lr, test_saving_dir+'test_lr.tif')
+            write3d(test_hr, test_saving_dir+'test_hr.tif')
+            break
 
     def _get_valid_otf_data(self):
         if self.valid_on_the_fly:
@@ -386,8 +380,8 @@ class BaseTrainer:
         tl.files.exists_or_mkdir(checkpoint_dir, verbose=False)
         
 
-        training_dataset = self.dataset
-        n_training_pairs = training_dataset.prepare(batch_size, n_epoch - begin_epoch)
+        dataset = self.dataset
+        n_training_pairs = dataset.prepare(batch_size, n_epoch - begin_epoch)
 
         
         
@@ -399,14 +393,12 @@ class BaseTrainer:
         """Pre-train the resolver independently
         """
         if begin_epoch == 0 and self.pretrain:
-            training_dataset.reset(1)
-            while training_dataset.hasNext():
+            for HR_batch, LR_batch, MR_batch, cursor, epoch in dataset.for_training():
                 step_time = time.time()
-                HR_batch, LR_batch, MR_batch, cursor, epoch = training_dataset.iter()
                 
                 evaluated = sess.run(self.pretrain_op, {self.plchdr_lr : LR_batch, self.plchdr_mr : MR_batch})         
                 
-                print("Pretrain iter:[%d/%d] times: %4.3fs" % (cursor + 1, n_training_pairs, time.time() - step_time))
+                print("Pretrain iter:[%d/%d] times: %4.3fs" % (cursor, n_training_pairs, time.time() - step_time))
                 if verbose:
                     losses_val = {name : value for name, value in evaluated.items() if 'loss' in name}
                     print(losses_val)
@@ -420,14 +412,11 @@ class BaseTrainer:
         fetches = dict(self.loss, **(self.optim))
         fetches['batch_summary'] = self.summary_op_training
 
-        training_dataset.reset(n_epoch)
-        while training_dataset.hasNext():
+        for HR_batch, LR_batch, MR_batch, cursor, epoch in dataset.for_training():
             step_time = time.time()
-            HR_batch, LR_batch, MR_batch, cursor, epoch = training_dataset.iter()
-
             epoch += begin_epoch
 
-            if (cursor == 0 and epoch != 0):
+            if (cursor == 1 and epoch != 0):
                 print('')
                 self._record_avg_test_loss(epoch, sess)
 
@@ -435,19 +424,19 @@ class BaseTrainer:
                 evaluated = sess.run(fetches, {self.plchdr_lr : LR_batch, self.plchdr_hr : HR_batch, self.plchdr_mr : MR_batch})
             else:
                 evaluated = sess.run(fetches, {self.plchdr_lr : LR_batch, self.plchdr_hr : HR_batch})
-            print("\rEpoch:[%d/%d] iter:[%d/%d] times: %4.3fs     " % (epoch, n_epoch, cursor + 1, n_training_pairs, time.time() - step_time), end='')
+            print("\rEpoch:[%d/%d] iter:[%d/%d] times: %4.3fs     " % (epoch, n_epoch, cursor, n_training_pairs, time.time() - step_time), end='')
             
             if verbose:
                 losses_val = {name : value for name, value in evaluated.items() if 'loss' in name}
                 print(losses_val, end='')
 
-            n_iters_passed = epoch * (n_training_pairs // batch_size) + cursor / batch_size
+            n_iters_passed = epoch * (n_training_pairs // batch_size) + cursor // batch_size
             self.training_loss_writer.add_summary(evaluated['batch_summary'], n_iters_passed)
 
-            if (epoch != 0 and epoch % decay_every == 0 and cursor == n_training_pairs - 1 ):
+            if (epoch != 0 and epoch % decay_every == 0 and cursor == 1):
                 self._adjust_learning_rate(epoch, sess)
                
-            if (epoch % ckpt_saving_interval == 0) and (cursor == 0):
+            if (epoch % ckpt_saving_interval == 0) and (cursor == 1):
                 self._save_intermediate_ckpt(epoch, sess)
                 if test:
                     self._add_test_summary(n_iters_passed, epoch, sess)
@@ -610,9 +599,28 @@ class DualStageTrainer(BaseTrainer):
         return begin  
 
     def _get_test_data(self):
-        super(DualStageTrainer, self)._get_test_data()        
-        write3d(self.test_mr[0 : batch_size], test_saving_dir+'test_mr.tif')
+        super(DualStageTrainer, self)._get_test_data()    
+        for _, _, mr_batch in self.dataset.for_test(): 
+            write3d(mr_batch, test_saving_dir+'test_mr.tif')
+            break
+    
+    def _record_avg_test_loss(self, epoch, sess):
+        super(DualStageTrainer, self)._record_avg_test_loss(epoch, sess)
+        if self.best_epoch == epoch:
 
+            groups_to_save = 4
+            idx = 0
+            for test_hr_batch, test_lr_batch, test_mr_batch in self.dataset.for_test():
+                feed = {self.plchdr_lr : test_lr_batch, self.plchdr_hr : test_hr_batch, self.plchdr_mr : test_mr_batch}
+                mr, sr = sess.run([self.resolver.outputs, self.interpolator.outputs], feed_dict = feed)
+                write3d(mr, test_saving_dir+'test_mr_best_%d.tif' % idx)
+                write3d(sr, test_saving_dir+'test_sr_best_%d.tif' % idx)
+                
+                idx += 1
+                if idx == groups_to_save:
+                    break
+
+'''
 class FusedSegTrainer(BaseTrainer):
     """Trainer for a fused 2-stage net, used after DualStageTrainer
     """
@@ -668,7 +676,7 @@ class FusedSegTrainer(BaseTrainer):
         else:
             #return self._find_available_ckpt(n_epoch, sess)
             return 0
-    
+'''   
    
 if __name__ == '__main__':
     import argparse
@@ -709,6 +717,7 @@ if __name__ == '__main__':
         test_mr_path  = test_mr_path,
         valid_lr_path = valid_lr_path,
         dtype         = np.float32,
+        normalization = normalization,
         transforms    = transform, 
         factor        = config.factor
     )
